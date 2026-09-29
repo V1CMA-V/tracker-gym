@@ -1,11 +1,12 @@
 ---
-import Welcome from '../components/Welcome.astro';
-import Layout from '../layouts/Layout.astro';
+import Layout from '../layouts/Layout.astro'
 
 // Welcome to Astro! Wondering what to do next? Check out the Astro documentation at https://docs.astro.build
 // Don't want to use any of this? Delete everything in this file, the `assets`, `components`, and `layouts` directories, and start fresh.
 ---
 
-<Layout>
-	<Welcome />
+<Layout title="Tracker Gym" description="A simple gym tracker">
+  <div class="h-screen w-full flex items-center justify-center">
+    <h1 class="text-blue-400 font-bold text-3xl">Welcome to the Tracker Gym</h1>
+  </div>
 </Layout>
