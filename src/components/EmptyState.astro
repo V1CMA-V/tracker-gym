@@ -1,0 +1,17 @@
+---
+interface Props {
+  title: string
+  hint?: string
+}
+
+const { title, hint }: Props = Astro.props
+---
+
+<div class="slab relative overflow-hidden px-5 py-10 text-center">
+  <div class="hazard absolute inset-x-0 top-0 h-1" aria-hidden="true"></div>
+  <h3 class="text-lg text-ash">{title}</h3>
+  {hint && <p class="mx-auto mt-2 max-w-sm text-sm text-ash-dim">{hint}</p>}
+  <div class="mt-5">
+    <slot />
+  </div>
+</div>

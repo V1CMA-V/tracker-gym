@@ -1,24 +1,38 @@
 ---
 import '../styles/global.css'
+import Nav from '../components/Nav.astro'
+
+interface Props {
+  title?: string
+  description?: string
+  /** La sesión activa se presenta a pantalla completa, sin la barra. */
+  bare?: boolean
+}
 
 const {
   title = 'Tracker Gym',
-  description = 'A simple gym tracker',
-}: { title?: string; description?: string } = Astro.props
+  description = 'Registro de entrenamiento: rutinas, ejercicios y series.',
+  bare = false,
+}: Props = Astro.props
+
+const fullTitle = title === 'Tracker Gym' ? title : `${title} · Tracker Gym`
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0B0B0C" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="icon" href="/favicon.ico" />
     <meta name="generator" content={Astro.generator} />
-    <title>{title}</title>
+    <title>{fullTitle}</title>
     <meta name="description" content={description} />
   </head>
-  <body>
-    <slot />
+  <body class="grain min-h-dvh">
+    {!bare && <Nav />}
+    <main class="mx-auto max-w-5xl px-4 pt-8 pb-24">
+      <slot />
+    </main>
   </body>
 </html>

@@ -1,0 +1,405 @@
+---
+import { actions } from 'astro:actions'
+
+import Layout from '../../layouts/Layout.astro'
+import ExercisePicker from '../../components/ExercisePicker.astro'
+import PlateStrip from '../../components/PlateStrip.astro'
+import type { PickableExercise } from '../../components/ExercisePicker.astro'
+import { prisma } from '../../lib/prisma'
+import { getCurrentUser } from '../../lib/session'
+import { clock, num, trim } from '../../lib/format'
+
+const { id } = Astro.params
+const user = await getCurrentUser(Astro.locals)
+
+if (!id) return Astro.redirect('/rutinas', 303)
+
+// Empezar el entreno sale de aquí: es la acción que lleva a otra página.
+const started = Astro.getActionResult(actions.startSession)
+if (started && !started.error) {
+  return Astro.redirect(`/sesion/${started.data.id}`, 303)
+}
+
+const archived = Astro.getActionResult(actions.archiveRoutine)
+if (archived && !archived.error) return Astro.redirect('/rutinas', 303)
+
+// El resto de acciones recargan esta misma página (POST-redirect-GET, así
+// que recargar el navegador no reenvía el formulario).
+const mutations = [
+  Astro.getActionResult(actions.addExerciseToRoutine),
+  Astro.getActionResult(actions.updateRoutineExercise),
+  Astro.getActionResult(actions.removeFromRoutine),
+  Astro.getActionResult(actions.moveRoutineExercise),
+  Astro.getActionResult(actions.updateRoutine),
+]
+const failed = mutations.find((r) => r?.error)
+if (mutations.some((r) => r && !r.error)) {
+  return Astro.redirect(Astro.url.pathname, 303)
+}
+const error = failed?.error?.message
+
+const routine = await prisma.routine.findFirst({
+  where: { id, userId: user.id },
+  select: {
+    id: true,
+    name: true,
+    description: true,
+    color: true,
+    exercises: {
+      orderBy: { position: 'asc' },
+      select: {
+        id: true,
+        position: true,
+        targetSets: true,
+        targetRepsMin: true,
+        targetRepsMax: true,
+        targetWeight: true,
+        restSeconds: true,
+        notes: true,
+        exercise: {
+          select: {
+            id: true,
+            name: true,
+            kind: true,
+            equipment: true,
+            muscles: {
+              where: { isPrimary: true },
+              select: { muscleGroup: { select: { name: true } } },
+            },
+          },
+        },
+      },
+    },
+  },
+})
+
+if (!routine) return Astro.rewrite('/404')
+
+// Catálogo global + los propios, sin los ya incluidos en la rutina.
+const alreadyIn = new Set(routine.exercises.map((re) => re.exercise.id))
+const catalog = await prisma.exercise.findMany({
+  where: { isArchived: false, OR: [{ userId: null }, { userId: user.id }] },
+  orderBy: { name: 'asc' },
+  select: {
+    id: true,
+    name: true,
+    equipment: true,
+    userId: true,
+    muscles: {
+      where: { isPrimary: true },
+      select: { muscleGroup: { select: { name: true } } },
+    },
+  },
+})
+
+const pickable: PickableExercise[] = catalog
+  .filter((e) => !alreadyIn.has(e.id))
+  .map((e) => ({
+    id: e.id,
+    name: e.name,
+    equipment: e.equipment,
+    muscle: e.muscles[0]?.muscleGroup.name ?? 'Otros',
+    isCustom: e.userId !== null,
+  }))
+
+const accent = routine.color ?? '#FFB000'
+const last = routine.exercises.length - 1
+
+/** Los de tiempo y distancia no llevan peso ni repeticiones objetivo. */
+const usesReps = (kind: string) => kind === 'weight_reps' || kind === 'bodyweight'
+const usesWeight = (kind: string) => kind === 'weight_reps'
+
+const totalSets = routine.exercises.reduce((sum, re) => sum + re.targetSets, 0)
+---
+
+<Layout title={routine.name} description={routine.description ?? undefined}>
+  <a href="/rutinas" class="stencil inline-block hover:text-chalk">← Rutinas</a>
+
+  <header class="mt-4 mb-8 border-l-4 pl-4" style={`border-color:${accent}`}>
+    <h1 class="text-4xl sm:text-5xl">{routine.name}</h1>
+    {routine.description && <p class="mt-2 text-ash">{routine.description}</p>}
+
+    <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+      <span class="stencil">
+        <span class="readout mr-1 text-base text-chalk">{routine.exercises.length}</span>
+        ejercicios
+      </span>
+      <span class="stencil">
+        <span class="readout mr-1 text-base text-chalk">{totalSets}</span>
+        series
+      </span>
+    </div>
+
+    {
+      routine.exercises.length > 0 && (
+        <form method="POST" action={actions.startSession} class="mt-5">
+          <input type="hidden" name="routineId" value={routine.id} />
+          <button type="submit" class="btn btn-primary w-full text-base sm:w-auto">
+            Empezar entrenamiento
+          </button>
+        </form>
+      )
+    }
+  </header>
+
+  {
+    error && (
+      <p
+        role="alert"
+        class="mb-6 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+      >
+        {error}
+      </p>
+    )
+  }
+
+  <!-- ===== Ejercicios de la rutina ===== -->
+  <ol class="grid gap-3">
+    {
+      routine.exercises.map((re, i) => {
+        const kind = re.exercise.kind
+        const weightKg = num(re.targetWeight)
+
+        return (
+          <li class="slab rise p-4" style={`animation-delay:${i * 50}ms`}>
+            <div class="flex items-start gap-3">
+              <span class="readout w-9 shrink-0 text-3xl text-steel-hi">
+                {String(re.position).padStart(2, '0')}
+              </span>
+
+              <div class="min-w-0 flex-1">
+                <h3 class="text-lg leading-tight">{re.exercise.name}</h3>
+                <p class="stencil mt-1">
+                  {[
+                    re.exercise.muscles[0]?.muscleGroup.name,
+                    re.exercise.equipment,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+
+                {weightKg !== null && usesWeight(kind) && (
+                  <div class="mt-2.5 flex items-center gap-2">
+                    <span class="readout text-lg text-sodium">
+                      {trim(weightKg)}
+                      <span class="stencil ml-0.5 text-ash">kg</span>
+                    </span>
+                    <PlateStrip kg={weightKg} />
+                  </div>
+                )}
+              </div>
+
+              {/* Reordenar y quitar */}
+              <div class="flex shrink-0 gap-1">
+                <form method="POST" action={actions.moveRoutineExercise}>
+                  <input type="hidden" name="id" value={re.id} />
+                  <input type="hidden" name="direction" value="up" />
+                  <button
+                    class="btn btn-sm btn-ghost px-2"
+                    disabled={i === 0}
+                    aria-label={`Subir ${re.exercise.name}`}
+                  >
+                    ↑
+                  </button>
+                </form>
+                <form method="POST" action={actions.moveRoutineExercise}>
+                  <input type="hidden" name="id" value={re.id} />
+                  <input type="hidden" name="direction" value="down" />
+                  <button
+                    class="btn btn-sm btn-ghost px-2"
+                    disabled={i === last}
+                    aria-label={`Bajar ${re.exercise.name}`}
+                  >
+                    ↓
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            {/* Objetivos editables en línea */}
+            <form
+              method="POST"
+              action={actions.updateRoutineExercise}
+              class="mt-4 flex flex-wrap items-end gap-2 border-t border-steel pt-3"
+            >
+              <input type="hidden" name="id" value={re.id} />
+
+              <label class="w-16">
+                <span class="stencil mb-1 block">Series</span>
+                <input
+                  type="number"
+                  name="targetSets"
+                  class="field px-2 text-center"
+                  value={re.targetSets}
+                  min="1"
+                  max="20"
+                  required
+                />
+              </label>
+
+              {usesReps(kind) && (
+                <>
+                  <label class="w-16">
+                    <span class="stencil mb-1 block">Reps</span>
+                    <input
+                      type="number"
+                      name="targetRepsMin"
+                      class="field px-2 text-center"
+                      value={re.targetRepsMin ?? ''}
+                      min="1"
+                      placeholder="—"
+                    />
+                  </label>
+                  <label class="w-16">
+                    <span class="stencil mb-1 block">a</span>
+                    <input
+                      type="number"
+                      name="targetRepsMax"
+                      class="field px-2 text-center"
+                      value={re.targetRepsMax ?? ''}
+                      min="1"
+                      placeholder="—"
+                    />
+                  </label>
+                </>
+              )}
+
+              {usesWeight(kind) && (
+                <label class="w-20">
+                  <span class="stencil mb-1 block">Peso kg</span>
+                  <input
+                    type="number"
+                    name="targetWeight"
+                    class="field px-2 text-center"
+                    value={weightKg ?? ''}
+                    min="0"
+                    step="0.5"
+                    placeholder="—"
+                  />
+                </label>
+              )}
+
+              <label class="w-20">
+                <span class="stencil mb-1 block">
+                  Desc. {re.restSeconds ? clock(re.restSeconds) : ''}
+                </span>
+                <input
+                  type="number"
+                  name="restSeconds"
+                  class="field px-2 text-center"
+                  value={re.restSeconds ?? ''}
+                  min="0"
+                  step="15"
+                  placeholder="s"
+                />
+              </label>
+
+              <button type="submit" class="btn btn-sm">Guardar</button>
+            </form>
+
+            <form method="POST" action={actions.removeFromRoutine} class="mt-2">
+              <input type="hidden" name="id" value={re.id} />
+              <button class="stencil hover:text-signal" type="submit">
+                Quitar de la rutina
+              </button>
+            </form>
+          </li>
+        )
+      })
+    }
+  </ol>
+
+  {
+    routine.exercises.length === 0 && (
+      <p class="slab px-5 py-8 text-center text-ash">
+        Esta rutina está vacía. Agrega el primer ejercicio abajo.
+      </p>
+    )
+  }
+
+  <!-- ===== Agregar ===== -->
+  <section class="slab mt-8 p-5">
+    {
+      pickable.length > 0 ? (
+        <ExercisePicker
+          action={actions.addExerciseToRoutine.queryString}
+          contextName="routineId"
+          contextValue={routine.id}
+          exercises={pickable}
+        />
+      ) : (
+        <p class="text-sm text-ash">
+          Ya agregaste todos los ejercicios del catálogo.{' '}
+          <a href="/ejercicios" class="text-sodium underline">
+            Crear uno nuevo
+          </a>
+          .
+        </p>
+      )
+    }
+  </section>
+
+  <!-- ===== Ajustes ===== -->
+  <details class="slab mt-4 p-5">
+    <summary class="stencil cursor-pointer select-none hover:text-chalk">
+      Editar rutina
+    </summary>
+
+    <form method="POST" action={actions.updateRoutine} class="mt-4 grid gap-4">
+      <input type="hidden" name="id" value={routine.id} />
+
+      <div class="grid gap-4 sm:grid-cols-[1fr_auto]">
+        <div>
+          <label class="stencil mb-1.5 block" for="r-name">Nombre</label>
+          <input
+            id="r-name"
+            name="name"
+            class="field"
+            value={routine.name}
+            required
+            maxlength="100"
+          />
+        </div>
+        <div>
+          <label class="stencil mb-1.5 block" for="r-color">Color</label>
+          <input
+            id="r-color"
+            type="color"
+            name="color"
+            value={accent}
+            class="field h-11 w-20 cursor-pointer p-1"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label class="stencil mb-1.5 block" for="r-desc">Descripción</label>
+        <input
+          id="r-desc"
+          name="description"
+          class="field"
+          value={routine.description ?? ''}
+        />
+      </div>
+
+      <div>
+        <button type="submit" class="btn">Guardar cambios</button>
+      </div>
+    </form>
+
+    <form
+      method="POST"
+      action={actions.archiveRoutine}
+      class="mt-6 border-t border-steel pt-4"
+    >
+      <input type="hidden" name="id" value={routine.id} />
+      <button type="submit" class="btn btn-sm btn-ghost btn-danger">
+        Archivar rutina
+      </button>
+      <p class="mt-2 text-xs text-ash-dim">
+        Se oculta de la lista. Las sesiones que ya la usaron conservan su
+        historial.
+      </p>
+    </form>
+  </details>
+</Layout>

@@ -1,0 +1,74 @@
+---
+import { prisma } from '../lib/prisma';
+import { getCurrentUser } from '../lib/session';
+
+const user = await getCurrentUser(Astro.locals);
+const path = Astro.url.pathname;
+
+// Si hay una sesión abierta, la barra la anuncia desde cualquier página:
+// es lo único que el usuario no puede permitirse olvidar.
+const openSession = await prisma.workoutSession.findFirst({
+  where: { userId: user.id, status: 'in_progress' },
+  select: { id: true, routineName: true },
+});
+
+const links = [
+  { href: '/', label: 'Hoy' },
+  { href: '/rutinas', label: 'Rutinas' },
+  { href: '/ejercicios', label: 'Ejercicios' },
+  { href: '/historial', label: 'Historial' },
+];
+
+const isActive = (href: string) =>
+  href === '/' ? path === '/' : path.startsWith(href);
+---
+
+<header class="sticky top-0 z-50 border-b border-steel bg-void/92 backdrop-blur-sm">
+  <div class="mx-auto flex max-w-5xl items-center gap-3 px-4 py-3 sm:gap-6">
+    <a href="/" class="group flex shrink-0 items-center gap-2.5" aria-label="Inicio">
+      <!-- Vista frontal de un disco olímpico -->
+      <svg viewBox="0 0 24 24" class="size-6 shrink-0" aria-hidden="true">
+        <circle cx="12" cy="12" r="11" fill="none" stroke="var(--color-sodium)" stroke-width="2" />
+        <circle cx="12" cy="12" r="3.5" fill="var(--color-sodium)" />
+      </svg>
+      <span
+        class="hidden font-display text-[0.9375rem] font-extrabold tracking-[-0.02em] uppercase sm:block"
+        style="font-variation-settings: 'wdth' 118"
+      >
+        Tracker<span class="text-sodium">Gym</span>
+      </span>
+    </a>
+
+    <nav class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto sm:gap-1">
+      {
+        links.map((link) => (
+          <a
+            href={link.href}
+            aria-current={isActive(link.href) ? 'page' : undefined}
+            class:list={[
+              'stencil shrink-0 border-b-2 px-2 py-2 transition-colors sm:px-3',
+              isActive(link.href)
+                ? 'border-sodium text-chalk'
+                : 'border-transparent hover:text-chalk',
+            ]}
+          >
+            {link.label}
+          </a>
+        ))
+      }
+    </nav>
+
+    {
+      openSession && !path.startsWith('/sesion/') && (
+        <a
+          href={`/sesion/${openSession.id}`}
+          class="btn btn-sm btn-primary shrink-0"
+          title={openSession.routineName ?? 'Entreno libre'}
+        >
+          <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-void" />
+          En curso
+        </a>
+      )
+    }
+  </div>
+</header>

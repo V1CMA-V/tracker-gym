@@ -1,0 +1,47 @@
+---
+import { plateMath, trim, BAR_KG } from '../lib/format'
+
+interface Props {
+  /** Peso total en kg, barra incluida. */
+  kg: number | null | undefined
+  class?: string
+}
+
+const { kg, class: className }: Props = Astro.props
+const load = plateMath(kg)
+
+// El disco más pesado es el más alto: la silueta imita la barra cargada.
+const height = (plateKg: number) => 10 + Math.min(plateKg, 25) * 0.86
+---
+
+{
+  load && (
+    <div
+      class:list={['flex items-end gap-[3px]', className]}
+      title={`Barra de ${BAR_KG} kg + ${load.perSide.map((p) => trim(p.kg)).join(' + ')} por lado`}
+    >
+      {/* Manguito de la barra */}
+      <span class="h-[7px] w-3 shrink-0 rounded-[1px] bg-ash-dim" aria-hidden="true" />
+
+      {load.perSide.map((plate) => (
+        <span
+          class="w-[7px] shrink-0 rounded-[1px]"
+          style={`height:${height(plate.kg)}px;background:${plate.color}`}
+          aria-hidden="true"
+        />
+      ))}
+
+      {!load.achievable && (
+        <span class="stencil pl-1 text-signal" aria-hidden="true">
+          +{trim(load.remainder)}
+        </span>
+      )}
+
+      <span class="sr-only">
+        {load.achievable
+          ? `Por lado: ${load.perSide.map((p) => `${trim(p.kg)} kilos`).join(', ')}.`
+          : `No se forma exacto con discos estándar: faltan ${trim(load.remainder)} kilos.`}
+      </span>
+    </div>
+  )
+}

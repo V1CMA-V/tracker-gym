@@ -1,0 +1,91 @@
+---
+import { actions } from 'astro:actions'
+import { num, trim, clock } from '../lib/format'
+import type { Decimalish } from '../lib/format'
+
+interface Props {
+  id: string
+  setNumber: number
+  weight: Decimalish
+  reps: number | null
+  durationSeconds: number | null
+  distanceMeters: Decimalish
+  rpe: Decimalish
+  isWarmup: boolean
+  kind: string
+}
+
+const {
+  id,
+  setNumber,
+  weight,
+  reps,
+  durationSeconds,
+  distanceMeters,
+  rpe,
+  isWarmup,
+  kind,
+}: Props = Astro.props
+
+const kg = num(weight)
+const meters = num(distanceMeters)
+const effort = num(rpe)
+
+// Cada tipo de ejercicio se lee distinto: peso×reps, solo reps, tiempo o
+// distancia. Se compone aquí para que la fila sea idéntica en todos.
+const parts: { value: string; unit?: string }[] = []
+if (kind === 'weight_reps' && kg !== null) parts.push({ value: trim(kg), unit: 'kg' })
+if ((kind === 'weight_reps' || kind === 'bodyweight') && reps !== null)
+  parts.push({ value: String(reps), unit: 'reps' })
+if (kind === 'bodyweight' && kg) parts.push({ value: `+${trim(kg)}`, unit: 'kg' })
+if (kind === 'duration' && durationSeconds !== null)
+  parts.push({ value: clock(durationSeconds) })
+if (kind === 'distance') {
+  if (meters !== null) parts.push({ value: trim(meters / 1000), unit: 'km' })
+  if (durationSeconds !== null) parts.push({ value: clock(durationSeconds) })
+}
+---
+
+<li
+  class:list={[
+    'flex items-center gap-3 border-b border-steel py-2.5 last:border-b-0',
+    isWarmup && 'opacity-55',
+  ]}
+  data-set-row
+>
+  <span
+    class:list={[
+      'readout w-7 shrink-0 text-center text-sm',
+      isWarmup ? 'text-ash-dim' : 'text-sodium',
+    ]}
+  >
+    {isWarmup ? 'W' : setNumber}
+  </span>
+
+  <div class="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+    {
+      parts.map((part) => (
+        <span class="readout text-lg whitespace-nowrap">
+          {part.value}
+          {part.unit && <span class="stencil ml-0.5 text-ash">{part.unit}</span>}
+        </span>
+      ))
+    }
+    {
+      effort !== null && (
+        <span class="stencil text-ash-dim">RPE {trim(effort)}</span>
+      )
+    }
+  </div>
+
+  <form method="POST" action={actions.deleteSet} class="shrink-0">
+    <input type="hidden" name="id" value={id} />
+    <button
+      type="submit"
+      class="stencil px-1 hover:text-signal"
+      aria-label={`Borrar serie ${setNumber}`}
+    >
+      ✕
+    </button>
+  </form>
+</li>

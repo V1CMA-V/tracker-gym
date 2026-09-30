@@ -1,0 +1,550 @@
+---
+import { actions } from 'astro:actions'
+
+import Layout from '../../layouts/Layout.astro'
+import SetRow from '../../components/SetRow.astro'
+import PlateStrip from '../../components/PlateStrip.astro'
+import ExercisePicker from '../../components/ExercisePicker.astro'
+import type { PickableExercise } from '../../components/ExercisePicker.astro'
+import { prisma } from '../../lib/prisma'
+import { getCurrentUser } from '../../lib/session'
+import { backTo, num, trim } from '../../lib/format'
+
+const { id } = Astro.params
+const user = await getCurrentUser(Astro.locals)
+
+if (!id) return Astro.redirect('/', 303)
+
+// Cerrar la sesión saca de esta pantalla.
+const finished = Astro.getActionResult(actions.finishSession)
+if (finished && !finished.error) {
+  return Astro.redirect(finished.data.completed ? '/historial' : '/', 303)
+}
+const cancelled = Astro.getActionResult(actions.cancelSession)
+if (cancelled && !cancelled.error) return Astro.redirect('/', 303)
+
+// El resto recarga esta pantalla conservando el ejercicio abierto.
+const mutations = [
+  Astro.getActionResult(actions.logSet),
+  Astro.getActionResult(actions.deleteSet),
+  Astro.getActionResult(actions.addExerciseToSession),
+]
+const failed = mutations.find((r) => r?.error)
+if (mutations.some((r) => r && !r.error)) {
+  return Astro.redirect(backTo(Astro.url), 303)
+}
+const error = failed?.error?.message
+
+const session = await prisma.workoutSession.findFirst({
+  where: { id, userId: user.id },
+  select: {
+    id: true,
+    status: true,
+    startedAt: true,
+    routineId: true,
+    routineName: true,
+    exercises: {
+      orderBy: { position: 'asc' },
+      select: {
+        id: true,
+        position: true,
+        exercise: {
+          select: { id: true, name: true, kind: true, equipment: true },
+        },
+        sets: {
+          orderBy: { setNumber: 'asc' },
+          select: {
+            id: true,
+            setNumber: true,
+            weight: true,
+            reps: true,
+            durationSeconds: true,
+            distanceMeters: true,
+            rpe: true,
+            isWarmup: true,
+          },
+        },
+      },
+    },
+  },
+})
+
+if (!session) return Astro.rewrite('/404')
+if (session.status !== 'in_progress') return Astro.redirect('/historial', 303)
+
+// Ejercicio abierto por querystring: navegar entre ejercicios son enlaces
+// normales, así que funciona sin JavaScript.
+const requested = Number(Astro.url.searchParams.get('e') ?? '0')
+const index = Number.isFinite(requested)
+  ? Math.min(Math.max(0, requested), Math.max(0, session.exercises.length - 1))
+  : 0
+const current = session.exercises[index]
+
+// Objetivos de la rutina para este ejercicio (si la sesión viene de una).
+const target =
+  current && session.routineId
+    ? await prisma.routineExercise.findFirst({
+        where: { routineId: session.routineId, exerciseId: current.exercise.id },
+        select: {
+          targetSets: true,
+          targetRepsMin: true,
+          targetRepsMax: true,
+          targetWeight: true,
+          restSeconds: true,
+        },
+      })
+    : null
+
+// "La última vez": series del entreno completado más reciente con este
+// ejercicio. Sale de la vista v_sets_detail.
+type LastSet = { set_number: number; weight: string | null; reps: number | null }
+const lastTime: LastSet[] = current
+  ? await prisma.$queryRaw<LastSet[]>`
+      SELECT set_number, weight, reps
+      FROM v_sets_detail
+      WHERE user_id = ${user.id}::uuid
+        AND exercise_id = ${current.exercise.id}::uuid
+        AND NOT is_warmup
+        AND session_id = (
+          SELECT session_id FROM v_sets_detail
+          WHERE user_id = ${user.id}::uuid
+            AND exercise_id = ${current.exercise.id}::uuid
+          ORDER BY started_at DESC
+          LIMIT 1
+        )
+      ORDER BY set_number
+    `
+  : []
+
+// Catálogo para agregar un ejercicio sobre la marcha.
+const alreadyIn = new Set(session.exercises.map((se) => se.exercise.id))
+const catalog = await prisma.exercise.findMany({
+  where: { isArchived: false, OR: [{ userId: null }, { userId: user.id }] },
+  orderBy: { name: 'asc' },
+  select: {
+    id: true,
+    name: true,
+    equipment: true,
+    userId: true,
+    muscles: {
+      where: { isPrimary: true },
+      select: { muscleGroup: { select: { name: true } } },
+    },
+  },
+})
+const pickable: PickableExercise[] = catalog
+  .filter((e) => !alreadyIn.has(e.id))
+  .map((e) => ({
+    id: e.id,
+    name: e.name,
+    equipment: e.equipment,
+    muscle: e.muscles[0]?.muscleGroup.name ?? 'Otros',
+    isCustom: e.userId !== null,
+  }))
+
+const kind = current?.exercise.kind
+const usesWeight = kind === 'weight_reps'
+const usesReps = kind === 'weight_reps' || kind === 'bodyweight'
+const usesTime = kind === 'duration' || kind === 'distance'
+const usesDistance = kind === 'distance'
+
+// Precarga: lo que se hizo la última vez en la serie que toca ahora, o el
+// objetivo de la rutina. Se escribe menos y se entrena más.
+const nextSetNumber = (current?.sets.filter((s) => !s.isWarmup).length ?? 0) + 1
+const reference = lastTime[nextSetNumber - 1] ?? lastTime.at(-1)
+const prefillWeight =
+  reference?.weight != null ? Number(reference.weight) : num(target?.targetWeight)
+const prefillReps = reference?.reps ?? target?.targetRepsMin ?? null
+
+const totalSets = session.exercises.reduce(
+  (sum, se) => sum + se.sets.filter((s) => !s.isWarmup).length,
+  0,
+)
+const restSeconds = target?.restSeconds ?? 90
+
+const targetLabel = target
+  ? [
+      `${target.targetSets}×`,
+      target.targetRepsMin && target.targetRepsMax
+        ? `${target.targetRepsMin}-${target.targetRepsMax}`
+        : (target.targetRepsMin ?? ''),
+      target.targetWeight ? `@ ${trim(num(target.targetWeight)!)} kg` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : null
+---
+
+<Layout title={session.routineName ?? 'Entreno libre'} bare>
+  <!-- ===== Barra de sesión ===== -->
+  <header class="sticky top-0 z-50 border-b border-steel bg-void/95 backdrop-blur-sm">
+    <div class="mx-auto flex max-w-3xl items-center gap-3 px-4 py-2.5">
+      <span class="size-2 shrink-0 animate-pulse rounded-full bg-signal"></span>
+
+      <div class="min-w-0 flex-1">
+        <p class="stencil text-sodium">En curso</p>
+        <p class="truncate text-sm font-semibold">
+          {session.routineName ?? 'Entreno libre'}
+        </p>
+      </div>
+
+      <p
+        class="readout shrink-0 text-lg"
+        data-elapsed
+        data-started={session.startedAt.toISOString()}
+        aria-label="Tiempo transcurrido"
+      >
+        --:--
+      </p>
+
+      <a href="#terminar" class="btn btn-sm shrink-0">Terminar</a>
+    </div>
+  </header>
+
+  <div class="mx-auto max-w-3xl px-4 pt-5 pb-28">
+    {
+      error && (
+        <p
+          role="alert"
+          class="mb-4 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+        >
+          {error}
+        </p>
+      )
+    }
+
+    <!-- ===== Navegación entre ejercicios ===== -->
+    <nav class="mb-5 flex gap-1.5 overflow-x-auto pb-1" aria-label="Ejercicios">
+      {
+        session.exercises.map((se, i) => {
+          const done = se.sets.filter((s) => !s.isWarmup).length
+          return (
+            <a
+              href={`?e=${i}`}
+              aria-current={i === index ? 'true' : undefined}
+              class:list={[
+                'slab flex shrink-0 items-center gap-2 px-2.5 py-1.5 transition-colors',
+                i === index
+                  ? 'border-sodium bg-sodium/10'
+                  : 'hover:border-steel-hi',
+              ]}
+            >
+              <span class="readout text-xs text-ash">
+                {String(i + 1).padStart(2, '0')}
+              </span>
+              <span class="max-w-32 truncate text-xs">{se.exercise.name}</span>
+              {done > 0 && (
+                <span class="readout text-xs text-go">{done}</span>
+              )}
+            </a>
+          )
+        })
+      }
+    </nav>
+
+    {
+      current ? (
+        <article data-exercise>
+          <header class="mb-5">
+            <h1 class="text-3xl sm:text-4xl">{current.exercise.name}</h1>
+            <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+              {current.exercise.equipment && (
+                <span class="stencil">{current.exercise.equipment}</span>
+              )}
+              {targetLabel && (
+                <span class="stencil text-sodium">Objetivo {targetLabel}</span>
+              )}
+            </div>
+
+            {usesWeight && prefillWeight !== null && (
+              <div class="mt-3">
+                <PlateStrip kg={prefillWeight} />
+              </div>
+            )}
+          </header>
+
+          {/* La última vez */}
+          {lastTime.length > 0 && (
+            <div class="slab mb-5 px-3.5 py-2.5">
+              <p class="stencil">La última vez</p>
+              <p class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                {lastTime.map((s) => (
+                  <span class="readout text-sm text-ash">
+                    {s.weight != null ? `${trim(Number(s.weight))}×` : ''}
+                    {s.reps ?? '—'}
+                  </span>
+                ))}
+              </p>
+            </div>
+          )}
+
+          {/* Series registradas */}
+          <section class="slab mb-5 px-3.5 py-1">
+            {current.sets.length > 0 ? (
+              <ul data-sets>
+                {current.sets.map((set) => (
+                  <SetRow {...set} kind={current.exercise.kind} />
+                ))}
+              </ul>
+            ) : (
+              <p class="py-6 text-center text-sm text-ash-dim" data-sets-empty>
+                Sin series todavía.
+              </p>
+            )}
+          </section>
+
+          {/* Registrar serie */}
+          <form
+            method="POST"
+            action={actions.logSet}
+            class="slab p-4"
+            data-log-form
+            data-rest={restSeconds}
+          >
+            <input type="hidden" name="sessionExerciseId" value={current.id} />
+
+            <div class="flex flex-wrap items-end gap-3">
+              {usesWeight && (
+                <div class="min-w-32 flex-1">
+                  <label class="stencil mb-1.5 block" for="f-weight">Peso kg</label>
+                  <div class="flex items-stretch gap-1">
+                    <button
+                      type="button"
+                      class="btn btn-sm w-10 px-0"
+                      data-step="-2.5"
+                      data-for="f-weight"
+                      aria-label="Bajar 2.5 kg"
+                    >
+                      −
+                    </button>
+                    <input
+                      id="f-weight"
+                      type="number"
+                      name="weight"
+                      class="field min-w-0 flex-1 text-center text-lg"
+                      step="0.5"
+                      min="0"
+                      inputmode="decimal"
+                      value={prefillWeight ?? ''}
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-sm w-10 px-0"
+                      data-step="2.5"
+                      data-for="f-weight"
+                      aria-label="Subir 2.5 kg"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {usesReps && (
+                <div class="min-w-32 flex-1">
+                  <label class="stencil mb-1.5 block" for="f-reps">Reps</label>
+                  <div class="flex items-stretch gap-1">
+                    <button
+                      type="button"
+                      class="btn btn-sm w-10 px-0"
+                      data-step="-1"
+                      data-for="f-reps"
+                      aria-label="Una repetición menos"
+                    >
+                      −
+                    </button>
+                    <input
+                      id="f-reps"
+                      type="number"
+                      name="reps"
+                      class="field min-w-0 flex-1 text-center text-lg"
+                      min="0"
+                      inputmode="numeric"
+                      value={prefillReps ?? ''}
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-sm w-10 px-0"
+                      data-step="1"
+                      data-for="f-reps"
+                      aria-label="Una repetición más"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {usesTime && (
+                <div class="min-w-28 flex-1">
+                  <label class="stencil mb-1.5 block" for="f-duration">
+                    Segundos
+                  </label>
+                  <input
+                    id="f-duration"
+                    type="number"
+                    name="durationSeconds"
+                    class="field text-center text-lg"
+                    min="0"
+                    inputmode="numeric"
+                  />
+                </div>
+              )}
+
+              {usesDistance && (
+                <div class="min-w-28 flex-1">
+                  <label class="stencil mb-1.5 block" for="f-distance">Metros</label>
+                  <input
+                    id="f-distance"
+                    type="number"
+                    name="distanceMeters"
+                    class="field text-center text-lg"
+                    min="0"
+                    step="10"
+                    inputmode="decimal"
+                  />
+                </div>
+              )}
+
+              <div class="w-20">
+                <label class="stencil mb-1.5 block" for="f-rpe">RPE</label>
+                <input
+                  id="f-rpe"
+                  type="number"
+                  name="rpe"
+                  class="field text-center"
+                  min="1"
+                  max="10"
+                  step="0.5"
+                  inputmode="decimal"
+                  placeholder="—"
+                />
+              </div>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  name="isWarmup"
+                  value="true"
+                  class="size-4 accent-[var(--color-sodium)]"
+                />
+                <span class="stencil">Calentamiento</span>
+              </label>
+
+              <button type="submit" class="btn btn-primary flex-1 text-base sm:flex-none">
+                Registrar serie
+              </button>
+            </div>
+
+            {/* El contador visible cambia cada segundo; anunciarlo así sería
+                ruido para un lector de pantalla, que recibe solo el aviso
+                de inicio y de fin desde la región de abajo. */}
+            <p class="stencil mt-3 hidden text-center text-sodium" data-rest-timer aria-hidden="true"></p>
+            <p class="sr-only" data-rest-announce role="status" aria-live="polite"></p>
+          </form>
+
+          {/* Avanzar */}
+          <div class="mt-4 flex justify-between gap-2">
+            <a
+              href={`?e=${index - 1}`}
+              class:list={['btn btn-ghost', index === 0 && 'pointer-events-none opacity-30']}
+              aria-disabled={index === 0}
+            >
+              ← Anterior
+            </a>
+            <a
+              href={`?e=${index + 1}`}
+              class:list={[
+                'btn btn-ghost',
+                index >= session.exercises.length - 1 && 'pointer-events-none opacity-30',
+              ]}
+              aria-disabled={index >= session.exercises.length - 1}
+            >
+              Siguiente →
+            </a>
+          </div>
+        </article>
+      ) : (
+        <p class="slab px-5 py-8 text-center text-ash">
+          Esta sesión no tiene ejercicios. Agrega uno abajo.
+        </p>
+      )
+    }
+
+    <!-- ===== Agregar ejercicio sobre la marcha ===== -->
+    <details class="slab mt-6 p-4">
+      <summary class="stencil cursor-pointer select-none hover:text-chalk">
+        Agregar otro ejercicio
+      </summary>
+      <div class="mt-4">
+        <ExercisePicker
+          action={actions.addExerciseToSession.queryString}
+          contextName="sessionId"
+          contextValue={session.id}
+          exercises={pickable}
+          label="Ejercicio"
+        />
+      </div>
+    </details>
+
+    <!-- ===== Terminar ===== -->
+    <section id="terminar" class="slab mt-6 p-5">
+      <h2 class="text-lg">Terminar entrenamiento</h2>
+      <p class="mt-1 text-sm text-ash">
+        {
+          totalSets > 0
+            ? `${totalSets} series registradas.`
+            : 'Sin series registradas: se descartará en vez de guardarse.'
+        }
+      </p>
+
+      <form method="POST" action={actions.finishSession} class="mt-4 grid gap-4">
+        <input type="hidden" name="id" value={session.id} />
+
+        <div class="grid gap-4 sm:grid-cols-[10rem_1fr]">
+          <div>
+            <label class="stencil mb-1.5 block" for="bodyweight">
+              Peso corporal
+            </label>
+            <input
+              id="bodyweight"
+              type="number"
+              name="bodyweight"
+              class="field text-center"
+              step="0.1"
+              min="0"
+              inputmode="decimal"
+              placeholder="kg"
+            />
+          </div>
+          <div>
+            <label class="stencil mb-1.5 block" for="notes">Notas</label>
+            <input
+              id="notes"
+              name="notes"
+              class="field"
+              placeholder="Buen día, subir peso la próxima"
+            />
+          </div>
+        </div>
+
+        <div>
+          <button type="submit" class="btn btn-primary w-full text-base sm:w-auto">
+            Guardar y terminar
+          </button>
+        </div>
+      </form>
+
+      <form method="POST" action={actions.cancelSession} class="mt-5 border-t border-steel pt-4">
+        <input type="hidden" name="id" value={session.id} />
+        <button type="submit" class="btn btn-sm btn-ghost btn-danger">
+          Descartar sesión
+        </button>
+      </form>
+    </section>
+  </div>
+
+  <script src="../../scripts/session.ts"></script>
+</Layout>

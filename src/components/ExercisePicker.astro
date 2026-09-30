@@ -1,0 +1,73 @@
+---
+export type PickableExercise = {
+  id: string
+  name: string
+  equipment: string | null
+  muscle: string
+  isCustom: boolean
+}
+
+interface Props {
+  /**
+   * URL de la action destino: `actions.addExerciseToRoutine.queryString`.
+   * Se pasa la cadena y no el objeto porque el tipo `ActionClient` genérico
+   * es una unión que no garantiza `queryString`.
+   */
+  action: string
+  /** Campo oculto que identifica el destino. */
+  contextName: 'routineId' | 'sessionId'
+  contextValue: string
+  exercises: PickableExercise[]
+  label?: string
+}
+
+const {
+  action,
+  contextName,
+  contextValue,
+  exercises,
+  label = 'Agregar ejercicio',
+}: Props = Astro.props
+
+// Agrupado por músculo: el `<select>` nativo es lo mejor en móvil, y con
+// optgroups se navega sin buscar.
+const byMuscle = new Map<string, PickableExercise[]>()
+for (const exercise of exercises) {
+  const list = byMuscle.get(exercise.muscle) ?? []
+  list.push(exercise)
+  byMuscle.set(exercise.muscle, list)
+}
+const groups = [...byMuscle.entries()].sort(([a], [b]) => a.localeCompare(b, 'es'))
+---
+
+{/* Astro renderiza exactamente esta cadena al pasarle una action
+    directamente; aquí llega ya resuelta desde la página. */}
+<form
+  method="POST"
+  action={action}
+  class="flex flex-wrap items-end gap-2"
+>
+  <input type="hidden" name={contextName} value={contextValue} />
+
+  <div class="min-w-0 flex-1 basis-56">
+    <label class="stencil mb-1.5 block" for="exercise-picker">{label}</label>
+    <select id="exercise-picker" name="exerciseId" class="field" required>
+      <option value="" disabled selected>Elegir…</option>
+      {
+        groups.map(([muscle, items]) => (
+          <optgroup label={muscle}>
+            {items.map((exercise) => (
+              <option value={exercise.id}>
+                {exercise.name}
+                {exercise.equipment ? ` · ${exercise.equipment}` : ''}
+                {exercise.isCustom ? ' ·' : ''}
+              </option>
+            ))}
+          </optgroup>
+        ))
+      }
+    </select>
+  </div>
+
+  <button type="submit" class="btn btn-primary">Agregar</button>
+</form>

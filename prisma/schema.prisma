@@ -1,0 +1,254 @@
+// =====================================================================
+// GYM TRACKER · Esquema Prisma (v1)
+// Equivalente al esquema PostgreSQL de referencia.
+// Los CHECK, índices parciales, triggers y vistas viven en SQL crudo
+// dentro de la migración (ver prisma/constraints.sql).
+// =====================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------
+enum RoleUser {
+  ADMIN
+  USER
+
+  @@map("role_user")
+}
+
+enum ExerciseKind {
+  weight_reps // peso + repeticiones (press banca, sentadilla)
+  bodyweight // solo repeticiones, peso extra opcional (dominadas, fondos)
+  duration // tiempo (plancha)
+  distance // distancia + tiempo (caminadora, remo)
+
+  @@map("exercise_kind")
+}
+
+enum SessionStatus {
+  in_progress
+  completed
+  cancelled
+
+  @@map("session_status")
+}
+
+enum WeightUnit {
+  kg
+  lb
+
+  @@map("weight_unit")
+}
+
+// ---------------------------------------------------------------------
+// 1. Usuarios
+// ---------------------------------------------------------------------
+model User {
+  id            String     @id @default(uuid()) @db.Uuid
+  email         String     @unique @db.VarChar(255)
+  passwordHash  String     @map("password_hash")
+  displayName   String     @map("display_name") @db.VarChar(100)
+  role          RoleUser   @default(USER)
+  preferredUnit WeightUnit @default(kg) @map("preferred_unit")
+  timezone      String     @default("America/Mexico_City") @db.VarChar(64)
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  exercises         Exercise[]
+  routines          Routine[]
+  weeklySchedule    WeeklySchedule[]
+  scheduledWorkouts ScheduledWorkout[]
+  sessions          WorkoutSession[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------
+// 2. Catálogo de grupos musculares
+// ---------------------------------------------------------------------
+model MuscleGroup {
+  id   Int    @id @default(autoincrement()) @db.SmallInt
+  name String @unique @db.VarChar(50) // pecho, espalda, tríceps...
+
+  exercises ExerciseMuscle[]
+
+  @@map("muscle_groups")
+}
+
+// ---------------------------------------------------------------------
+// 3. Ejercicios
+//    userId NULL  => ejercicio global (catálogo base de la app)
+//    userId != NULL => ejercicio personalizado del usuario
+// ---------------------------------------------------------------------
+model Exercise {
+  id          String       @id @default(uuid()) @db.Uuid
+  userId      String?      @map("user_id") @db.Uuid
+  name        String       @db.VarChar(100)
+  kind        ExerciseKind @default(weight_reps)
+  equipment   String?      @db.VarChar(50) // barra, mancuerna, máquina, polea...
+  description String?
+  isArchived  Boolean      @default(false) @map("is_archived") // se oculta sin perder historial
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user           User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  muscles        ExerciseMuscle[]
+  routineEntries RoutineExercise[]
+  sessionEntries SessionExercise[]
+
+  // El índice único real es sobre (COALESCE(user_id, uuid-cero), lower(name)):
+  // se crea en SQL porque Prisma no expresa expresiones en índices.
+  @@index([userId])
+  @@map("exercises")
+}
+
+model ExerciseMuscle {
+  exerciseId    String  @map("exercise_id") @db.Uuid
+  muscleGroupId Int     @map("muscle_group_id") @db.SmallInt
+  isPrimary     Boolean @default(true) @map("is_primary")
+
+  exercise    Exercise    @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+  muscleGroup MuscleGroup @relation(fields: [muscleGroupId], references: [id])
+
+  @@id([exerciseId, muscleGroupId])
+  @@map("exercise_muscles")
+}
+
+// ---------------------------------------------------------------------
+// 4. Rutinas (plantillas): "Empuje", "Jalón", "Pierna"...
+// ---------------------------------------------------------------------
+model Routine {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  name        String   @db.VarChar(100)
+  description String?
+  color       String?  @db.VarChar(7) // '#FF5733' para el calendario
+  isArchived  Boolean  @default(false) @map("is_archived")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exercises         RoutineExercise[]
+  weeklySchedule    WeeklySchedule[]
+  scheduledWorkouts ScheduledWorkout[]
+  sessions          WorkoutSession[]
+
+  @@unique([userId, name])
+  @@map("routines")
+}
+
+model RoutineExercise {
+  id            String   @id @default(uuid()) @db.Uuid
+  routineId     String   @map("routine_id") @db.Uuid
+  exerciseId    String   @map("exercise_id") @db.Uuid
+  position      Int      @db.SmallInt // 1, 2, 3...
+  targetSets    Int      @default(3) @map("target_sets") @db.SmallInt
+  targetRepsMin Int?     @map("target_reps_min") @db.SmallInt // rango 8-12
+  targetRepsMax Int?     @map("target_reps_max") @db.SmallInt
+  targetWeight  Decimal? @map("target_weight") @db.Decimal(6, 2)
+  restSeconds   Int?     @default(90) @map("rest_seconds") @db.SmallInt
+  notes         String?
+
+  routine  Routine  @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  exercise Exercise @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+
+  @@unique([routineId, position]) // en SQL se vuelve DEFERRABLE para reordenar
+  @@map("routine_exercises")
+}
+
+// ---------------------------------------------------------------------
+// 5. Programación
+//    a) Plan semanal fijo: "todos los lunes → Empuje"
+// ---------------------------------------------------------------------
+model WeeklySchedule {
+  userId    String @map("user_id") @db.Uuid
+  dayOfWeek Int    @map("day_of_week") @db.SmallInt // 0=domingo (igual que EXTRACT(DOW))
+  routineId String @map("routine_id") @db.Uuid
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  routine Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  @@id([userId, dayOfWeek])
+  @@map("weekly_schedule")
+}
+
+//    b) Fechas concretas del calendario (sobrescriben el plan semanal ese día)
+model ScheduledWorkout {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  routineId     String?  @map("routine_id") @db.Uuid // NULL = día de descanso
+  scheduledDate DateTime @map("scheduled_date") @db.Date
+  notes         String?
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  routine Routine? @relation(fields: [routineId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, scheduledDate])
+  @@map("scheduled_workouts")
+}
+
+// ---------------------------------------------------------------------
+// 6. Registro de entrenamientos (lo que REALMENTE se hizo)
+// ---------------------------------------------------------------------
+model WorkoutSession {
+  id          String        @id @default(uuid()) @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  routineId   String?       @map("routine_id") @db.Uuid // NULL = entreno libre
+  routineName String?       @map("routine_name") @db.VarChar(100) // copia: el historial sobrevive si borran la rutina
+  status      SessionStatus @default(in_progress)
+  startedAt   DateTime      @default(now()) @map("started_at") @db.Timestamptz(6)
+  endedAt     DateTime?     @map("ended_at") @db.Timestamptz(6)
+  bodyweight  Decimal?      @db.Decimal(5, 2) // peso corporal del día (opcional)
+  notes       String?
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  routine   Routine?          @relation(fields: [routineId], references: [id], onDelete: SetNull)
+  exercises SessionExercise[]
+
+  @@index([userId, startedAt(sort: Desc)])
+  @@map("workout_sessions")
+}
+
+// Ejercicios hechos en la sesión (pueden diferir de la rutina)
+model SessionExercise {
+  id         String  @id @default(uuid()) @db.Uuid
+  sessionId  String  @map("session_id") @db.Uuid
+  exerciseId String  @map("exercise_id") @db.Uuid
+  position   Int     @db.SmallInt
+  notes      String?
+
+  session  WorkoutSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  exercise Exercise       @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+  sets     ExerciseSet[]
+
+  @@unique([sessionId, position]) // DEFERRABLE en SQL
+  @@index([exerciseId]) // progreso por ejercicio
+  @@map("session_exercises")
+}
+
+// Cada serie registrada
+model ExerciseSet {
+  id                String   @id @default(uuid()) @db.Uuid
+  sessionExerciseId String   @map("session_exercise_id") @db.Uuid
+  setNumber         Int      @map("set_number") @db.SmallInt
+  weight            Decimal? @db.Decimal(6, 2) // siempre en kg; se convierte en el frontend
+  reps              Int?     @db.SmallInt
+  durationSeconds   Int?     @map("duration_seconds")
+  distanceMeters    Decimal? @map("distance_meters") @db.Decimal(8, 2)
+  rpe               Decimal? @db.Decimal(3, 1) // esfuerzo percibido 1-10
+  isWarmup          Boolean  @default(false) @map("is_warmup")
+  completedAt       DateTime @default(now()) @map("completed_at") @db.Timestamptz(6)
+
+  sessionExercise SessionExercise @relation(fields: [sessionExerciseId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionExerciseId, setNumber])
+  @@map("exercise_sets")
+}

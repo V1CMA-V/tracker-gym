@@ -1,0 +1,159 @@
+---
+import { actions } from 'astro:actions'
+
+import Layout from '../../layouts/Layout.astro'
+import RoutineCard from '../../components/RoutineCard.astro'
+import EmptyState from '../../components/EmptyState.astro'
+import { prisma } from '../../lib/prisma'
+import { getCurrentUser } from '../../lib/session'
+
+const user = await getCurrentUser(Astro.locals)
+
+// POST-redirect-GET: tras crear, se salta al detalle para seguir armándola.
+const created = Astro.getActionResult(actions.createRoutine)
+if (created && !created.error) {
+  return Astro.redirect(`/rutinas/${created.data.id}`, 303)
+}
+const error = created?.error?.message
+
+// Una sola query: rutinas + sus ejercicios + el grupo muscular de cada uno.
+const routines = await prisma.routine.findMany({
+  where: { userId: user.id, isArchived: false },
+  orderBy: { createdAt: 'asc' },
+  select: {
+    id: true,
+    name: true,
+    description: true,
+    color: true,
+    _count: { select: { exercises: true } },
+    exercises: {
+      select: {
+        exercise: {
+          select: {
+            muscles: {
+              where: { isPrimary: true },
+              select: { muscleGroup: { select: { name: true } } },
+            },
+          },
+        },
+      },
+    },
+  },
+})
+
+/** Grupos musculares distintos que toca la rutina, en orden de aparición. */
+const musclesOf = (routine: (typeof routines)[number]) => [
+  ...new Set(
+    routine.exercises.flatMap((re) =>
+      re.exercise.muscles.map((m) => m.muscleGroup.name),
+    ),
+  ),
+]
+
+const palette = ['#FFB000', '#C8372D', '#2B5FAE', '#57A06A', '#C8A02D', '#9AA0A6']
+---
+
+<Layout title="Rutinas">
+  <header class="mb-8 flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <p class="stencil">Plantillas</p>
+      <h1 class="mt-1 text-4xl sm:text-5xl">Rutinas</h1>
+    </div>
+    <p class="readout text-3xl text-steel-hi">
+      {String(routines.length).padStart(2, '0')}
+    </p>
+  </header>
+
+  {
+    routines.length > 0 ? (
+      <div class="grid gap-3 sm:grid-cols-2">
+        {routines.map((routine, i) => (
+          <RoutineCard
+            id={routine.id}
+            name={routine.name}
+            description={routine.description}
+            color={routine.color}
+            exerciseCount={routine._count.exercises}
+            muscles={musclesOf(routine)}
+            delay={i}
+          />
+        ))}
+      </div>
+    ) : (
+      <EmptyState
+        title="Todavía no hay rutinas"
+        hint="Una rutina es una plantilla: los ejercicios que sueles hacer juntos, en orden, con sus series y pesos objetivo."
+      />
+    )
+  }
+
+  <!-- Alta de rutina -->
+  <section class="slab mt-10 p-5">
+    <h2 class="text-lg">Nueva rutina</h2>
+
+    {
+      error && (
+        <p
+          role="alert"
+          class="mt-3 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+        >
+          {error}
+        </p>
+      )
+    }
+
+    <form method="POST" action={actions.createRoutine} class="mt-4 grid gap-4">
+      <div class="grid gap-4 sm:grid-cols-[1fr_auto]">
+        <div>
+          <label class="stencil mb-1.5 block" for="name">Nombre</label>
+          <input
+            id="name"
+            name="name"
+            class="field"
+            required
+            maxlength="100"
+            placeholder="Empuje, Jalón, Pierna…"
+          />
+        </div>
+
+        <fieldset class="min-w-0">
+          <legend class="stencil mb-1.5">Color</legend>
+          <div class="flex flex-wrap gap-1.5">
+            {palette.map((hex, i) => (
+              <label class="cursor-pointer" title={hex}>
+                <input
+                  type="radio"
+                  name="color"
+                  value={hex}
+                  checked={i === 0}
+                  class="peer sr-only"
+                />
+                <span
+                  class="block size-9 rounded-[2px] border-2 border-transparent peer-checked:border-chalk peer-focus-visible:outline-2 peer-focus-visible:outline-sodium"
+                  style={`background:${hex}`}
+                />
+                <span class="sr-only">{hex}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      </div>
+
+      <div>
+        <label class="stencil mb-1.5 block" for="description">
+          Descripción <span class="text-ash-dim">(opcional)</span>
+        </label>
+        <input
+          id="description"
+          name="description"
+          class="field"
+          placeholder="Pecho, hombro y tríceps"
+        />
+      </div>
+
+      <div>
+        <button type="submit" class="btn btn-primary">Crear rutina</button>
+      </div>
+    </form>
+  </section>
+</Layout>

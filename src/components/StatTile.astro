@@ -1,0 +1,19 @@
+---
+interface Props {
+  label: string
+  value: string
+  unit?: string
+  /** Índice para escalonar la entrada. */
+  delay?: number
+}
+
+const { label, value, unit, delay = 0 }: Props = Astro.props
+---
+
+<div class="slab rise px-3 py-3" style={`animation-delay:${delay * 60}ms`}>
+  <div class="stencil">{label}</div>
+  <div class="mt-1.5 flex items-baseline gap-1">
+    <span class="readout text-2xl">{value}</span>
+    {unit && <span class="stencil text-ash-dim">{unit}</span>}
+  </div>
+</div>

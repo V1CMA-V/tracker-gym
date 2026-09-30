@@ -1,0 +1,172 @@
+---
+import Layout from '../layouts/Layout.astro'
+import EmptyState from '../components/EmptyState.astro'
+import { prisma } from '../lib/prisma'
+import { getCurrentUser } from '../lib/session'
+import { compact, date, duration, monthLabel, num, trim } from '../lib/format'
+
+const user = await getCurrentUser(Astro.locals)
+
+const sessions = await prisma.workoutSession.findMany({
+  where: { userId: user.id, status: 'completed' },
+  orderBy: { startedAt: 'desc' },
+  take: 60,
+  select: {
+    id: true,
+    routineName: true,
+    startedAt: true,
+    endedAt: true,
+    bodyweight: true,
+    notes: true,
+    exercises: {
+      orderBy: { position: 'asc' },
+      select: {
+        exercise: { select: { name: true } },
+        sets: {
+          select: { weight: true, reps: true, isWarmup: true },
+        },
+      },
+    },
+  },
+})
+
+/** Volumen = Σ peso × reps, sin contar calentamientos. */
+const volumeOf = (session: (typeof sessions)[number]) =>
+  session.exercises.reduce(
+    (total, se) =>
+      total +
+      se.sets.reduce(
+        (sum, set) =>
+          set.isWarmup ? sum : sum + (num(set.weight) ?? 0) * (set.reps ?? 0),
+        0,
+      ),
+    0,
+  )
+
+const workingSets = (session: (typeof sessions)[number]) =>
+  session.exercises.reduce(
+    (total, se) => total + se.sets.filter((s) => !s.isWarmup).length,
+    0,
+  )
+
+// Agrupadas por mes en la zona horaria del usuario, no la del servidor.
+const months = new Map<string, typeof sessions>()
+for (const session of sessions) {
+  const key = monthLabel(session.startedAt, user.timezone)
+  const list = months.get(key) ?? []
+  list.push(session)
+  months.set(key, list)
+}
+---
+
+<Layout title="Historial">
+  <header class="mb-8 flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <p class="stencil">Lo que ya hiciste</p>
+      <h1 class="mt-1 text-4xl sm:text-5xl">Historial</h1>
+    </div>
+    <p class="readout text-3xl text-steel-hi">
+      {String(sessions.length).padStart(2, '0')}
+    </p>
+  </header>
+
+  {
+    sessions.length === 0 ? (
+      <EmptyState
+        title="Todavía no hay entrenamientos"
+        hint="Cuando termines tu primera sesión aparecerá aquí, con su volumen y duración."
+      >
+        <a href="/" class="btn btn-primary">Empezar a entrenar</a>
+      </EmptyState>
+    ) : (
+      [...months.entries()].map(([month, list]) => (
+        <section class="mb-10">
+          <h2 class="stencil sticky top-14 z-10 mb-3 bg-void/92 py-1.5 backdrop-blur-sm">
+            {month} · {list.length}{' '}
+            {list.length === 1 ? 'sesión' : 'sesiones'}
+          </h2>
+
+          <ul class="grid gap-2">
+            {list.map((session, i) => {
+              const volume = volumeOf(session)
+              const bodyweight = num(session.bodyweight)
+
+              return (
+                <li
+                  class="slab rise p-4"
+                  style={`animation-delay:${Math.min(i, 10) * 40}ms`}
+                >
+                  <div class="flex items-start gap-4">
+                    <div class="w-11 shrink-0 text-center">
+                      <p class="readout text-2xl leading-none">
+                        {date(session.startedAt, user.timezone, {
+                          day: 'numeric',
+                          month: undefined,
+                        })}
+                      </p>
+                      <p class="stencil mt-1">
+                        {date(session.startedAt, user.timezone, {
+                          weekday: 'short',
+                          day: undefined,
+                          month: undefined,
+                        })}
+                      </p>
+                    </div>
+
+                    <div class="min-w-0 flex-1">
+                      <h3 class="text-lg leading-tight">
+                        {session.routineName ?? 'Entreno libre'}
+                      </h3>
+
+                      <p class="mt-1 truncate text-sm text-ash">
+                        {session.exercises
+                          .map((se) => se.exercise.name)
+                          .join(' · ')}
+                      </p>
+
+                      <div class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1">
+                        <span class="stencil">
+                          <span class="readout mr-1 text-sm text-chalk">
+                            {duration(session.startedAt, session.endedAt)}
+                          </span>
+                        </span>
+                        <span class="stencil">
+                          <span class="readout mr-1 text-sm text-chalk">
+                            {workingSets(session)}
+                          </span>
+                          series
+                        </span>
+                        {volume > 0 && (
+                          <span class="stencil">
+                            <span class="readout mr-1 text-sm text-sodium">
+                              {compact(volume)}
+                            </span>
+                            kg de volumen
+                          </span>
+                        )}
+                        {bodyweight !== null && (
+                          <span class="stencil">
+                            <span class="readout mr-1 text-sm text-chalk">
+                              {trim(bodyweight)}
+                            </span>
+                            kg corporal
+                          </span>
+                        )}
+                      </div>
+
+                      {session.notes && (
+                        <p class="mt-2.5 border-l-2 border-steel pl-2.5 text-sm text-ash-dim italic">
+                          {session.notes}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ))
+    )
+  }
+</Layout>

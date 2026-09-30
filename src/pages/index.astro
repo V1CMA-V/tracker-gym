@@ -1,12 +1,237 @@
 ---
-import Layout from '../layouts/Layout.astro'
+import { actions } from 'astro:actions'
 
-// Welcome to Astro! Wondering what to do next? Check out the Astro documentation at https://docs.astro.build
-// Don't want to use any of this? Delete everything in this file, the `assets`, `components`, and `layouts` directories, and start fresh.
+import Layout from '../layouts/Layout.astro'
+import StatTile from '../components/StatTile.astro'
+import EmptyState from '../components/EmptyState.astro'
+import { prisma } from '../lib/prisma'
+import { getCurrentUser } from '../lib/session'
+import { compact, date, duration, trim } from '../lib/format'
+
+const user = await getCurrentUser(Astro.locals)
+
+const started = Astro.getActionResult(actions.startSession)
+if (started && !started.error) {
+  return Astro.redirect(`/sesion/${started.data.id}`, 303)
+}
+const error = started?.error?.message
+
+// Qué toca hoy: la función del esquema resuelve la prioridad entre el
+// calendario y el plan semanal.
+const [todayRow] = await prisma.$queryRaw<{ routine_id: string | null }[]>`
+  SELECT routine_for_date(${user.id}::uuid, (now() AT TIME ZONE ${user.timezone})::date)
+    AS routine_id
+`
+
+const suggested = todayRow?.routine_id
+  ? await prisma.routine.findUnique({
+      where: { id: todayRow.routine_id },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        color: true,
+        _count: { select: { exercises: true } },
+      },
+    })
+  : null
+
+const openSession = await prisma.workoutSession.findFirst({
+  where: { userId: user.id, status: 'in_progress' },
+  select: { id: true, routineName: true, startedAt: true },
+})
+
+const recent = await prisma.workoutSession.findMany({
+  where: { userId: user.id, status: 'completed' },
+  orderBy: { startedAt: 'desc' },
+  take: 3,
+  select: {
+    id: true,
+    routineName: true,
+    startedAt: true,
+    endedAt: true,
+    _count: { select: { exercises: true } },
+  },
+})
+
+// Resumen del mes desde la vista.
+type MonthRow = {
+  sessions: bigint
+  total_hours: string | null
+  total_volume_kg: string | null
+  total_sets: bigint | null
+}
+const [month] = await prisma.$queryRaw<MonthRow[]>`
+  SELECT sessions, total_hours, total_volume_kg, total_sets
+  FROM v_monthly_summary
+  WHERE user_id = ${user.id}::uuid
+    AND month = date_trunc('month', now() AT TIME ZONE ${user.timezone})::date
+`
+
+const routineCount = await prisma.routine.count({
+  where: { userId: user.id, isArchived: false },
+})
+
+const now = new Date()
+const greeting = (() => {
+  const hour = Number(
+    new Intl.DateTimeFormat('es-MX', {
+      timeZone: user.timezone,
+      hour: 'numeric',
+      hour12: false,
+    }).format(now),
+  )
+  if (hour < 6) return 'De madrugada'
+  if (hour < 12) return 'Buenos días'
+  if (hour < 20) return 'Buenas tardes'
+  return 'Buenas noches'
+})()
+
+const stats = [
+  { label: 'Sesiones', value: String(month?.sessions ?? 0) },
+  { label: 'Horas', value: month?.total_hours ? trim(Number(month.total_hours)) : '0' },
+  { label: 'Series', value: String(month?.total_sets ?? 0) },
+  {
+    label: 'Volumen',
+    value: month?.total_volume_kg ? compact(Number(month.total_volume_kg)) : '0',
+    unit: 'kg',
+  },
+]
 ---
 
-<Layout title="Tracker Gym" description="A simple gym tracker">
-  <div class="h-screen w-full flex items-center justify-center">
-    <h1 class="text-blue-400 font-bold text-3xl">Welcome to the Tracker Gym</h1>
-  </div>
+<Layout>
+  <header class="mb-8">
+    <p class="stencil">
+      {greeting} · {date(now, user.timezone, { weekday: 'long' })}
+    </p>
+    <h1 class="mt-1.5 text-4xl sm:text-5xl">{user.displayName}</h1>
+  </header>
+
+  {
+    error && (
+      <p
+        role="alert"
+        class="mb-6 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+      >
+        {error}
+      </p>
+    )
+  }
+
+  <!-- ===== Lo de hoy ===== -->
+  {
+    openSession ? (
+      <section class="slab rise relative overflow-hidden border-sodium p-5">
+        <div class="hazard absolute inset-x-0 top-0 h-1" aria-hidden="true" />
+        <p class="stencil text-sodium">Entrenamiento en curso</p>
+        <h2 class="mt-2 text-3xl">{openSession.routineName ?? 'Entreno libre'}</h2>
+        <p class="mt-1.5 text-sm text-ash">
+          Empezó a las{' '}
+          {date(openSession.startedAt, user.timezone, {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: undefined,
+            month: undefined,
+          })}
+        </p>
+        <a href={`/sesion/${openSession.id}`} class="btn btn-primary mt-5 w-full sm:w-auto">
+          Continuar
+        </a>
+      </section>
+    ) : suggested ? (
+      <section
+        class="slab rise relative overflow-hidden p-5 pl-6"
+        style={`border-color:${suggested.color ?? '#FFB000'}`}
+      >
+        <span
+          class="absolute inset-y-0 left-0 w-1.5"
+          style={`background:${suggested.color ?? '#FFB000'}`}
+          aria-hidden="true"
+        />
+        <p class="stencil">Hoy toca</p>
+        <h2 class="mt-2 text-3xl sm:text-4xl">{suggested.name}</h2>
+        {suggested.description && (
+          <p class="mt-1.5 text-sm text-ash">{suggested.description}</p>
+        )}
+        <p class="stencil mt-3">
+          <span class="readout mr-1 text-base text-chalk">
+            {suggested._count.exercises}
+          </span>
+          ejercicios
+        </p>
+
+        <form method="POST" action={actions.startSession} class="mt-5 flex flex-wrap gap-2">
+          <input type="hidden" name="routineId" value={suggested.id} />
+          <button type="submit" class="btn btn-primary flex-1 text-base sm:flex-none">
+            Empezar
+          </button>
+          <a href={`/rutinas/${suggested.id}`} class="btn btn-ghost">Ver rutina</a>
+        </form>
+      </section>
+    ) : routineCount > 0 ? (
+      <section class="slab rise p-5">
+        <p class="stencil">Sin plan para hoy</p>
+        <h2 class="mt-2 text-2xl">Elige una rutina o entrena libre</h2>
+        <div class="mt-5 flex flex-wrap gap-2">
+          <a href="/rutinas" class="btn btn-primary">Ver rutinas</a>
+          <form method="POST" action={actions.startSession}>
+            <button type="submit" class="btn btn-ghost">Entreno libre</button>
+          </form>
+        </div>
+      </section>
+    ) : (
+      <EmptyState
+        title="Empieza por una rutina"
+        hint="Agrupa los ejercicios que sueles hacer juntos. Después podrás iniciar el entrenamiento con un botón."
+      >
+        <a href="/rutinas" class="btn btn-primary">Crear mi primera rutina</a>
+      </EmptyState>
+    )
+  }
+
+  <!-- ===== Este mes ===== -->
+  <section class="mt-10">
+    <h2 class="stencil mb-3">
+      {date(now, user.timezone, { month: 'long', day: undefined })} en números
+    </h2>
+    <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {stats.map((stat, i) => <StatTile {...stat} delay={i} />)}
+    </div>
+  </section>
+
+  <!-- ===== Últimas sesiones ===== -->
+  {
+    recent.length > 0 && (
+      <section class="mt-10">
+        <div class="mb-3 flex items-baseline justify-between">
+          <h2 class="stencil">Últimos entrenamientos</h2>
+          <a href="/historial" class="stencil hover:text-chalk">
+            Ver todo →
+          </a>
+        </div>
+
+        <ul class="grid gap-2">
+          {recent.map((entry, i) => (
+            <li
+              class="slab rise flex items-center gap-4 px-4 py-3"
+              style={`animation-delay:${i * 60}ms`}
+            >
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-base">
+                  {entry.routineName ?? 'Entreno libre'}
+                </p>
+                <p class="stencil mt-0.5">
+                  {date(entry.startedAt, user.timezone, { weekday: 'short' })} ·{' '}
+                  {entry._count.exercises} ejercicios
+                </p>
+              </div>
+              <span class="readout shrink-0 text-sm text-ash">
+                {duration(entry.startedAt, entry.endedAt)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )
+  }
 </Layout>
