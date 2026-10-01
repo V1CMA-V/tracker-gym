@@ -125,7 +125,7 @@ const scheduled = await prisma.weeklySchedule.findMany({
 })
 const days = weekDayLabels(scheduled.map((row) => row.dayOfWeek))
 
-const accent = routine.color ?? '#FFB000'
+const accent = routine.color ?? '#E8A33D'
 const last = routine.exercises.length - 1
 
 /** Los de tiempo y distancia no llevan peso ni repeticiones objetivo. */
@@ -163,10 +163,10 @@ for (const row of rows) {
 ---
 
 <Layout title={routine.name} description={routine.description ?? undefined}>
-  <a href="/rutinas" class="stencil inline-block hover:text-chalk">← Rutinas</a>
+  <a href="/rutinas" class="stencil inline-block transition-colors hover:text-chalk">&larr; Rutinas</a>
 
-  <header class="mt-4 mb-8 border-l-4 pl-4" style={`border-color:${accent}`}>
-    <h1 class="text-4xl sm:text-5xl">{routine.name}</h1>
+  <header class="mt-5 mb-9 border-l-[3px] pl-5" style={`border-color:${accent}`}>
+    <h1 class="text-5xl sm:text-6xl">{routine.name}</h1>
     {routine.description && <p class="mt-2 text-ash">{routine.description}</p>}
 
     <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
@@ -207,7 +207,7 @@ for (const row of rows) {
     error && (
       <p
         role="alert"
-        class="mb-6 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+        class="mb-6 rounded-slab border border-signal/40 bg-signal/10 px-4 py-3 text-sm text-signal"
       >
         {error}
       </p>
@@ -221,7 +221,7 @@ for (const row of rows) {
         <section
           class:list={[
             'grid gap-2',
-            block.length > 1 && 'border-l-2 border-sodium/40 pl-2.5',
+            block.length > 1 && 'rounded-slab border-l-2 border-sodium/35 bg-sodium/[0.03] py-2.5 pr-1 pl-3',
           ]}
         >
           {block.length > 1 && (
@@ -235,14 +235,14 @@ for (const row of rows) {
         const weightKg = num(re.targetWeight)
 
         return (
-          <article class="slab rise p-4" style={`animation-delay:${i * 50}ms`}>
+          <article class="slab rise p-4 sm:p-5" style={`animation-delay:${i * 50}ms`}>
             <div class="flex items-start gap-3">
               <span class="readout w-9 shrink-0 text-3xl text-steel-hi">
                 {String(re.position).padStart(2, '0')}
               </span>
 
               <div class="min-w-0 flex-1">
-                <h3 class="text-lg leading-tight">{re.exercise.name}</h3>
+                <h3 class="text-2xl leading-tight">{re.exercise.name}</h3>
                 <p class="stencil mt-1">
                   {[
                     re.exercise.muscles[0]?.muscleGroup.name,
@@ -472,14 +472,14 @@ for (const row of rows) {
 
   {
     routine.exercises.length === 0 && (
-      <p class="slab px-5 py-8 text-center text-ash">
+      <p class="slab px-5 py-12 text-center text-ash">
         Esta rutina está vacía. Agrega el primer ejercicio abajo.
       </p>
     )
   }
 
   <!-- ===== Agregar ===== -->
-  <section class="slab mt-8 p-5">
+  <section class="slab mt-8 p-5 sm:p-6">
     {
       pickable.length > 0 ? (
         <ExercisePicker
@@ -501,7 +501,7 @@ for (const row of rows) {
   </section>
 
   <!-- ===== Ajustes ===== -->
-  <details class="slab mt-4 p-5">
+  <details class="slab mt-4 p-5 sm:p-6">
     <summary class="stencil cursor-pointer select-none hover:text-chalk">
       Editar rutina
     </summary>

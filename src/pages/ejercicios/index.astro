@@ -74,10 +74,10 @@ const mine = exercises.filter((e) => e.userId !== null).length
   <header class="mb-6 flex flex-wrap items-end justify-between gap-4">
     <div>
       <p class="stencil">Catálogo</p>
-      <h1 class="mt-1 text-4xl sm:text-5xl">Ejercicios</h1>
+      <h1 class="mt-2 text-5xl sm:text-6xl">Ejercicios</h1>
     </div>
     <p class="stencil text-right">
-      <span class="readout text-2xl text-chalk">{exercises.length}</span> visibles<br />
+      <span class="readout mr-1.5 text-3xl text-chalk">{exercises.length}</span> visibles<br />
       <span class="text-ash-dim">{mine} propios</span>
     </p>
   </header>
@@ -85,14 +85,14 @@ const mine = exercises.filter((e) => e.userId !== null).length
   <!-- ===== Filtros ===== -->
   <div class="mb-6 grid gap-2">
     <div class="flex flex-wrap items-center gap-1.5">
-      <span class="stencil w-14 shrink-0">Músculo</span>
+      <span class="stencil w-20 shrink-0 text-ash-dim">Músculo</span>
       <a
         href={linkWith('musculo', null)}
         class:list={[
-          'stencil border px-2 py-1 transition-colors',
+          'stencil rounded-full border px-3 py-1.5 transition-colors',
           !muscleFilter
-            ? 'border-sodium text-sodium'
-            : 'border-steel hover:text-chalk',
+            ? 'border-sodium/40 bg-sodium/12 text-sodium'
+            : 'border-steel text-ash hover:border-steel-hi hover:text-chalk',
         ]}
       >
         Todos
@@ -102,10 +102,10 @@ const mine = exercises.filter((e) => e.userId !== null).length
           <a
             href={linkWith('musculo', group.name)}
             class:list={[
-              'stencil border px-2 py-1 transition-colors',
+              'stencil rounded-full border px-3 py-1.5 transition-colors',
               muscleFilter === group.name
-                ? 'border-sodium text-sodium'
-                : 'border-steel hover:text-chalk',
+                ? 'border-sodium/40 bg-sodium/12 text-sodium'
+                : 'border-steel text-ash hover:border-steel-hi hover:text-chalk',
             ]}
           >
             {group.name}
@@ -115,12 +115,12 @@ const mine = exercises.filter((e) => e.userId !== null).length
     </div>
 
     <div class="flex flex-wrap items-center gap-1.5">
-      <span class="stencil w-14 shrink-0">Tipo</span>
+      <span class="stencil w-20 shrink-0 text-ash-dim">Tipo</span>
       <a
         href={linkWith('tipo', null)}
         class:list={[
-          'stencil border px-2 py-1 transition-colors',
-          !kindFilter ? 'border-sodium text-sodium' : 'border-steel hover:text-chalk',
+          'stencil rounded-full border px-3 py-1.5 transition-colors',
+          !kindFilter ? 'border-sodium/40 bg-sodium/12 text-sodium' : 'border-steel text-ash hover:border-steel-hi hover:text-chalk',
         ]}
       >
         Todos
@@ -130,10 +130,10 @@ const mine = exercises.filter((e) => e.userId !== null).length
           <a
             href={linkWith('tipo', value)}
             class:list={[
-              'stencil border px-2 py-1 transition-colors',
+              'stencil rounded-full border px-3 py-1.5 transition-colors',
               kindFilter === value
-                ? 'border-sodium text-sodium'
-                : 'border-steel hover:text-chalk',
+                ? 'border-sodium/40 bg-sodium/12 text-sodium'
+                : 'border-steel text-ash hover:border-steel-hi hover:text-chalk',
             ]}
           >
             {label}
@@ -147,7 +147,7 @@ const mine = exercises.filter((e) => e.userId !== null).length
     error && (
       <p
         role="alert"
-        class="mb-6 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+        class="mb-6 rounded-slab border border-signal/40 bg-signal/10 px-4 py-3 text-sm text-signal"
       >
         {error}
       </p>
@@ -157,28 +157,28 @@ const mine = exercises.filter((e) => e.userId !== null).length
   <!-- ===== Listado ===== -->
   {
     exercises.length > 0 ? (
-      <ul class="grid gap-2 sm:grid-cols-2">
+      <ul class="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {exercises.map((exercise, i) => {
           const isMine = exercise.userId !== null
           const primary = exercise.muscles[0]
 
           return (
             <li
-              class="slab rise p-3.5"
+              class="slab slab-lift rise min-w-0 p-4"
               style={`animation-delay:${Math.min(i, 12) * 35}ms`}
             >
               <div class="flex items-start gap-3">
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
-                    <h3 class="truncate text-base">{exercise.name}</h3>
+                    <h3 class="truncate text-xl leading-tight">{exercise.name}</h3>
                     {isMine && (
-                      <span class="stencil shrink-0 border border-sodium-dim px-1 text-sodium">
+                      <span class="stencil shrink-0 rounded-full border border-sodium/35 px-2 py-0.5 text-sodium">
                         Propio
                       </span>
                     )}
                   </div>
 
-                  <p class="stencil mt-1 truncate">
+                  <p class="stencil mt-1.5 truncate text-ash-dim">
                     {[
                       primary?.muscleGroup.name,
                       exercise.equipment,
@@ -218,7 +218,8 @@ const mine = exercises.filter((e) => e.userId !== null).length
               {/* El catálogo de la app no se edita; los propios sí. */}
               {isMine && (
                 <details class="mt-3 border-t border-steel pt-3">
-                  <summary class="stencil cursor-pointer select-none hover:text-chalk">
+                  <summary class="stencil group flex cursor-pointer list-none select-none items-center gap-1.5 hover:text-chalk">
+                    <span class="transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                     Editar
                   </summary>
 
@@ -255,15 +256,15 @@ const mine = exercises.filter((e) => e.userId !== null).length
         })}
       </ul>
     ) : (
-      <p class="slab px-5 py-8 text-center text-ash">
+      <p class="slab px-5 py-12 text-center text-ash">
         Ningún ejercicio coincide con el filtro.
       </p>
     )
   }
 
   <!-- ===== Alta ===== -->
-  <section class="slab mt-10 p-5">
-    <h2 class="text-lg">Nuevo ejercicio</h2>
+  <section class="slab mt-12 p-5 sm:p-6">
+    <h2 class="text-2xl">Nuevo ejercicio</h2>
     <p class="mt-1 text-sm text-ash-dim">
       Se agrega a tu catálogo personal, junto al de la app.
     </p>

@@ -166,7 +166,7 @@ const createRoutine = defineAction({
       .string()
       .regex(/^#[0-9a-fA-F]{6}$/)
       .optional()
-      .default('#FFB000'),
+      .default('#E8A33D'),
   }),
   handler: async ({ name, description, color }, ctx) => {
     const user = await getCurrentUser(ctx.locals);
@@ -674,71 +674,153 @@ const addExerciseToSession = defineAction({
   },
 });
 
-const logSet = defineAction({
+/** Valor numérico de un campo del formulario: vacío o ilegible → null. */
+function fieldNumber(raw: string | undefined): number | null {
+  const text = (raw ?? '').trim();
+  if (text === '') return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Una ronda: una serie de cada ejercicio del bloque, registradas de golpe.
+ *
+ * Un ejercicio suelto es una ronda de un solo miembro, así que esta es la
+ * única ruta de registro de la app. En una superserie no se descansa entre
+ * los ejercicios del bloque: partirla en varios POST obligaría a navegar de
+ * uno a otro con el cronómetro corriendo, que es justo lo que no se puede
+ * hacer con las manos en la máquina. Por eso viajan juntos.
+ *
+ * Los campos llegan como arrays paralelos —un valor por ejercicio, en el
+ * mismo orden— y el formulario manda siempre los cinco, vacíos incluidos,
+ * para que los índices cuadren. `isWarmup` es de la ronda entera y no de
+ * cada serie: un checkbox desmarcado no se envía y descuadraría el array.
+ */
+const logRound = defineAction({
   accept: 'form',
   input: z.object({
-    sessionExerciseId: z.uuid(),
-    weight: optionalNumber,
-    reps: optionalNumber,
-    durationSeconds: optionalNumber,
-    distanceMeters: optionalNumber,
-    rpe: optionalNumber,
+    sessionExerciseId: z.array(z.uuid()).min(1, 'La ronda no tiene ejercicios.'),
+    weight: z.array(z.string()),
+    reps: z.array(z.string()),
+    durationSeconds: z.array(z.string()),
+    distanceMeters: z.array(z.string()),
+    rpe: z.array(z.string()),
     isWarmup: z.coerce.boolean().optional().default(false),
   }),
-  handler: async ({ sessionExerciseId, ...values }, ctx) => {
+  handler: async (input, ctx) => {
     const user = await getCurrentUser(ctx.locals);
+    const ids = input.sessionExerciseId;
 
-    const target = await prisma.sessionExercise.findFirst({
-      where: { id: sessionExerciseId, session: { userId: user.id, status: 'in_progress' } },
-      select: { id: true, exerciseId: true },
+    const columns = [
+      input.weight,
+      input.reps,
+      input.durationSeconds,
+      input.distanceMeters,
+      input.rpe,
+    ];
+    if (columns.some((column) => column.length !== ids.length)) {
+      throw badRequest('El formulario llegó incompleto. Recarga e inténtalo otra vez.');
+    }
+
+    // Una sola consulta para todo el bloque. Además de comprobar que son del
+    // usuario y que la sesión sigue abierta, impide que una ronda mezcle
+    // ejercicios de dos sesiones distintas.
+    const owned = await prisma.sessionExercise.findMany({
+      where: { id: { in: ids }, session: { userId: user.id, status: 'in_progress' } },
+      select: { id: true, exerciseId: true, sessionId: true },
     });
-    if (!target) throw notFound('No hay una sesión abierta con ese ejercicio.');
+    const byId = new Map(owned.map((se) => [se.id, se]));
+    if (byId.size !== new Set(ids).size || new Set(owned.map((se) => se.sessionId)).size > 1) {
+      throw notFound('No hay una sesión abierta con esos ejercicios.');
+    }
 
-    const created = await prisma.$transaction(async (tx) => {
-      const last = await tx.exerciseSet.findFirst({
-        where: { sessionExerciseId },
-        orderBy: { setNumber: 'desc' },
-        select: { setNumber: true },
-      });
-
-      return tx.exerciseSet.create({
-        data: { sessionExerciseId, setNumber: (last?.setNumber ?? 0) + 1, ...values },
-        select: {
-          id: true,
-          setNumber: true,
-          weight: true,
-          reps: true,
-          durationSeconds: true,
-          distanceMeters: true,
-          rpe: true,
-          isWarmup: true,
+    // Un ejercicio del bloque se puede dejar en blanco —a veces solo se hace
+    // uno de los dos—, pero la ronda entera vacía sí es un error.
+    const entries = ids
+      .map((id, i) => ({
+        sessionExerciseId: id,
+        exerciseId: byId.get(id)!.exerciseId,
+        values: {
+          weight: fieldNumber(input.weight[i]),
+          reps: fieldNumber(input.reps[i]),
+          durationSeconds: fieldNumber(input.durationSeconds[i]),
+          distanceMeters: fieldNumber(input.distanceMeters[i]),
+          rpe: fieldNumber(input.rpe[i]),
+          isWarmup: input.isWarmup,
         },
-      });
+      }))
+      .filter((entry) => Object.values(entry.values).some((value) => typeof value === 'number'));
+
+    if (entries.length === 0) throw badRequest('No escribiste nada en esta ronda.');
+
+    // En secuencia y dentro de una transacción: la ronda se guarda entera o
+    // no se guarda, y cada `setNumber` se calcula sin pisarse con el de al lado.
+    const created = await prisma.$transaction(async (tx) => {
+      const rows = [];
+      for (const entry of entries) {
+        const last = await tx.exerciseSet.findFirst({
+          where: { sessionExerciseId: entry.sessionExerciseId },
+          orderBy: { setNumber: 'desc' },
+          select: { setNumber: true },
+        });
+
+        rows.push(
+          await tx.exerciseSet.create({
+            data: {
+              sessionExerciseId: entry.sessionExerciseId,
+              setNumber: (last?.setNumber ?? 0) + 1,
+              ...entry.values,
+            },
+            select: {
+              id: true,
+              setNumber: true,
+              weight: true,
+              reps: true,
+              durationSeconds: true,
+              distanceMeters: true,
+              rpe: true,
+              isWarmup: true,
+            },
+          }),
+        );
+      }
+      return rows;
     });
 
     // ¿Récord? Se compara contra el mejor 1RM estimado histórico del
     // ejercicio, que es justo lo que expone la vista v_personal_records.
-    let isPR = false;
-    const estimated = epley1RM(created.weight, created.reps);
-    if (estimated && !created.isWarmup) {
-      const [record] = await prisma.$queryRaw<{ est_1rm: number | null }[]>`
-        SELECT est_1rm FROM v_personal_records
-        WHERE user_id = ${user.id}::uuid AND exercise_id = ${target.exerciseId}::uuid
-      `;
-      isPR = !record?.est_1rm || estimated > Number(record.est_1rm);
-    }
+    // La serie recién creada no cuenta todavía: la vista solo mira sesiones
+    // con status 'completed' y esta sigue en curso.
+    const results = await Promise.all(
+      created.map(async (set, i) => {
+        const estimated = epley1RM(set.weight, set.reps);
+        let isPR = false;
 
-    // Decimal no serializa a JSON: se aplana antes de devolverlo.
-    return {
-      set: {
-        ...created,
-        weight: num(created.weight),
-        distanceMeters: num(created.distanceMeters),
-        rpe: num(created.rpe),
-      },
-      estimated1RM: estimated,
-      isPR,
-    };
+        if (estimated && !set.isWarmup) {
+          const [record] = await prisma.$queryRaw<{ est_1rm: number | null }[]>`
+            SELECT est_1rm FROM v_personal_records
+            WHERE user_id = ${user.id}::uuid
+              AND exercise_id = ${entries[i].exerciseId}::uuid
+          `;
+          isPR = !record?.est_1rm || estimated > Number(record.est_1rm);
+        }
+
+        return {
+          sessionExerciseId: entries[i].sessionExerciseId,
+          // Decimal no serializa a JSON: se aplana antes de devolverlo.
+          set: {
+            ...set,
+            weight: num(set.weight),
+            distanceMeters: num(set.distanceMeters),
+            rpe: num(set.rpe),
+          },
+          estimated1RM: estimated,
+          isPR,
+        };
+      }),
+    );
+
+    return { entries: results };
   },
 });
 
@@ -817,7 +899,7 @@ export const server = {
   toggleSuperset,
   startSession,
   addExerciseToSession,
-  logSet,
+  logRound,
   deleteSet,
   finishSession,
   cancelSession,

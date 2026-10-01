@@ -13,6 +13,23 @@ interface Props {
   rpe: Decimalish
   isWarmup: boolean
   kind: string
+  /** Destino del borrado. Se pasa para conservar el bloque abierto al volver. */
+  action?: string
+  /**
+   * Récord personal.
+   *
+   * OJO: `renderRow()` en src/scripts/session.ts construye a mano una fila
+   * equivalente para pintar la serie recién registrada sin recargar. Las
+   * clases de las dos tienen que coincidir LITERALMENTE, o la fila nueva se
+   * ve distinta a la misma fila después de recargar. Si tocas una, toca la
+   * otra en el mismo commit.
+   *
+   * Hoy la página no pasa este prop: el dato de récord sale de
+   * `v_personal_records` y solo lo consulta la action `logRound`, así que la
+   * insignia la pinta únicamente el script. El markup vive aquí de todas
+   * formas para que haya una sola definición que comparar.
+   */
+  isPR?: boolean
 }
 
 const {
@@ -25,6 +42,8 @@ const {
   rpe,
   isWarmup,
   kind,
+  action = actions.deleteSet.queryString,
+  isPR = false,
 }: Props = Astro.props
 
 const kg = num(weight)
@@ -48,26 +67,26 @@ if (kind === 'distance') {
 
 <li
   class:list={[
-    'flex items-center gap-3 border-b border-steel py-2.5 last:border-b-0',
-    isWarmup && 'opacity-55',
+    'flex items-center gap-3 border-b border-steel py-3 last:border-b-0',
+    isWarmup && 'opacity-50',
   ]}
   data-set-row
 >
   <span
     class:list={[
-      'readout w-7 shrink-0 text-center text-sm',
+      'readout w-8 shrink-0 text-center text-xs',
       isWarmup ? 'text-ash-dim' : 'text-sodium',
     ]}
   >
     {isWarmup ? 'W' : setNumber}
   </span>
 
-  <div class="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+  <div class="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1">
     {
       parts.map((part) => (
-        <span class="readout text-lg whitespace-nowrap">
+        <span class="readout text-xl whitespace-nowrap">
           {part.value}
-          {part.unit && <span class="stencil ml-0.5 text-ash">{part.unit}</span>}
+          {part.unit && <span class="stencil ml-1 text-ash-dim">{part.unit}</span>}
         </span>
       ))
     }
@@ -76,13 +95,20 @@ if (kind === 'distance') {
         <span class="stencil text-ash-dim">RPE {trim(effort)}</span>
       )
     }
+    {
+      isPR && (
+        <span class="stencil rounded-full border border-sodium px-1.5 py-0.5 text-sodium">
+          Récord
+        </span>
+      )
+    }
   </div>
 
-  <form method="POST" action={actions.deleteSet} class="shrink-0">
+  <form method="POST" action={action} class="shrink-0">
     <input type="hidden" name="id" value={id} />
     <button
       type="submit"
-      class="stencil px-1 hover:text-signal"
+      class="stencil flex size-9 items-center justify-center text-ash-dim hover:text-signal"
       aria-label={`Borrar serie ${setNumber}`}
     >
       ✕

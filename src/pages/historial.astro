@@ -60,12 +60,12 @@ for (const session of sessions) {
 ---
 
 <Layout title="Historial">
-  <header class="mb-8 flex flex-wrap items-end justify-between gap-4">
+  <header class="mb-9 flex flex-wrap items-end justify-between gap-4">
     <div>
       <p class="stencil">Lo que ya hiciste</p>
-      <h1 class="mt-1 text-4xl sm:text-5xl">Historial</h1>
+      <h1 class="mt-2 text-5xl sm:text-6xl">Historial</h1>
     </div>
-    <p class="readout text-3xl text-steel-hi">
+    <p class="readout text-4xl text-steel-hi">
       {String(sessions.length).padStart(2, '0')}
     </p>
   </header>
@@ -81,30 +81,35 @@ for (const session of sessions) {
     ) : (
       [...months.entries()].map(([month, list]) => (
         <section class="mb-10">
-          <h2 class="stencil sticky top-14 z-10 mb-3 bg-void/92 py-1.5 backdrop-blur-sm">
+          {/*
+            `--nav-h` es el alto de la barra (global.css). Antes esto era un
+            `top-14` a mano que había que recordar si el Nav cambiaba.
+          */}
+          <h2 class="stencil sticky top-[var(--nav-h)] z-10 mb-3 bg-void/85 py-2 backdrop-blur-xl">
             {month} · {list.length}{' '}
             {list.length === 1 ? 'sesión' : 'sesiones'}
           </h2>
 
-          <ul class="grid gap-2">
+          <ul class="slab divide-y divide-steel overflow-hidden">
             {list.map((session, i) => {
               const volume = volumeOf(session)
               const bodyweight = num(session.bodyweight)
 
               return (
                 <li
-                  class="slab rise p-4"
+                  class="rise min-w-0 p-4 sm:p-5"
                   style={`animation-delay:${Math.min(i, 10) * 40}ms`}
                 >
-                  <div class="flex items-start gap-4">
+                  <div class="flex items-start gap-4 sm:gap-5">
+                    {/* Canaleta de fecha: la cifra ancla la fila. */}
                     <div class="w-11 shrink-0 text-center">
-                      <p class="readout text-2xl leading-none">
+                      <p class="readout text-3xl leading-none">
                         {date(session.startedAt, user.timezone, {
                           day: 'numeric',
                           month: undefined,
                         })}
                       </p>
-                      <p class="stencil mt-1">
+                      <p class="stencil mt-1.5 text-ash-dim">
                         {date(session.startedAt, user.timezone, {
                           weekday: 'short',
                           day: undefined,
@@ -114,39 +119,39 @@ for (const session of sessions) {
                     </div>
 
                     <div class="min-w-0 flex-1">
-                      <h3 class="text-lg leading-tight">
+                      <h3 class="text-2xl leading-tight">
                         {session.routineName ?? 'Entreno libre'}
                       </h3>
 
-                      <p class="mt-1 truncate text-sm text-ash">
+                      <p class="mt-1.5 truncate text-sm text-ash">
                         {session.exercises
                           .map((se) => se.exercise.name)
                           .join(' · ')}
                       </p>
 
-                      <div class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1">
-                        <span class="stencil">
-                          <span class="readout mr-1 text-sm text-chalk">
+                      <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+                        <span class="stencil text-ash-dim">
+                          <span class="readout mr-1.5 text-sm text-chalk">
                             {duration(session.startedAt, session.endedAt)}
                           </span>
                         </span>
-                        <span class="stencil">
-                          <span class="readout mr-1 text-sm text-chalk">
+                        <span class="stencil text-ash-dim">
+                          <span class="readout mr-1.5 text-sm text-chalk">
                             {workingSets(session)}
                           </span>
                           series
                         </span>
                         {volume > 0 && (
-                          <span class="stencil">
-                            <span class="readout mr-1 text-sm text-sodium">
+                          <span class="stencil text-ash-dim">
+                            <span class="readout mr-1.5 text-sm text-sodium">
                               {compact(volume)}
                             </span>
                             kg de volumen
                           </span>
                         )}
                         {bodyweight !== null && (
-                          <span class="stencil">
-                            <span class="readout mr-1 text-sm text-chalk">
+                          <span class="stencil text-ash-dim">
+                            <span class="readout mr-1.5 text-sm text-chalk">
                               {trim(bodyweight)}
                             </span>
                             kg corporal
@@ -155,7 +160,7 @@ for (const session of sessions) {
                       </div>
 
                       {session.notes && (
-                        <p class="mt-2.5 border-l-2 border-steel pl-2.5 text-sm text-ash-dim italic">
+                        <p class="mt-3 border-l-2 border-steel-hi pl-3 text-sm text-ash-dim italic">
                           {session.notes}
                         </p>
                       )}

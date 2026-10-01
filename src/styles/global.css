@@ -1,50 +1,66 @@
 @import 'tailwindcss';
 
-/* Archivo con eje de ancho: los titulares van en Expanded, como una placa
-   estampada. Martian Mono para todo número — es lo que le da el carácter
-   de instrumento de medición. Ambas self-hosted, sin llamada a Google. */
+/* Instrument Serif para los nombres: un serif de alto contraste es lo que
+   convierte la pantalla en una página de revista en vez de un panel de
+   control. Archivo se queda para la interfaz —ya sin estirar el eje de
+   ancho— y Martian Mono para todo número, que es el carácter real de la
+   app. Las tres self-hosted, sin llamada a Google. */
+@import '@fontsource/instrument-serif/400.css';
+@import '@fontsource/instrument-serif/400-italic.css';
 @import '@fontsource-variable/archivo/wdth.css';
 @import '@fontsource/martian-mono/400.css';
 @import '@fontsource/martian-mono/700.css';
 
 /* =====================================================================
-   Tokens · Industrial / sala de pesas
-   Nave oscura, una sola lámpara de vapor de sodio encendida.
+   Tokens · Cuaderno de entrenamiento
+   Casi negro cálido, una sola luz ámbar, hairlines en vez de bordes.
+   Los nombres son los de siempre a propósito: se usan ~400 veces en el
+   markup y dentro de strings en scripts/session.ts. Cambian los valores,
+   no los nombres.
    ===================================================================== */
 @theme {
-  --color-void: #0b0b0c;
-  --color-pit: #0f0f11;
-  --color-panel: #141416;
-  --color-panel-hi: #1b1b1f;
-  --color-steel: #2a2a2e;
-  --color-steel-hi: #3d3d44;
-  --color-chalk: #e9e6df;
-  --color-ash: #8b897f;
-  --color-ash-dim: #5d5b54;
+  --color-void: #0a0a0b;
+  --color-pit: #101013;
+  --color-panel: #15151a;
+  --color-panel-hi: #1d1d23;
+  /* Equivale a ~7 % de blanco sobre panel, pero opaco: `border-steel`
+     tiene que verse igual encima de cualquier superficie. */
+  --color-steel: #272730;
+  --color-steel-hi: #3a3a44;
+  --color-chalk: #f2efe9;
+  --color-ash: #9b968c;
+  --color-ash-dim: #6a6560;
 
-  --color-sodium: #ffb000;
-  --color-sodium-hi: #ffc740;
-  --color-sodium-dim: #4a3400;
-  --color-signal: #ff3b30;
-  --color-go: #57a06a;
+  --color-sodium: #e8a33d;
+  --color-sodium-hi: #f4bd6a;
+  --color-sodium-dim: #4a3416;
+  --color-signal: #e0574a;
+  --color-go: #6fb98a;
 
-  --font-display: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Instrument Serif', ui-serif, Georgia, serif;
   --font-sans: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Martian Mono', ui-monospace, monospace;
 
-  --radius-slab: 2px;
+  --radius-slab: 14px;
+  --radius-field: 10px;
 
-  /* Sombras duras y desplazadas: luz cenital única, nada de blur difuso. */
-  --shadow-slab: 4px 4px 0 0 rgb(0 0 0 / 0.55);
-  --shadow-lift: 6px 6px 0 0 rgb(0 0 0 / 0.6);
+  /* Sombra difusa y un filo de luz arriba: profundidad, no estampado. */
+  --shadow-slab: inset 0 1px 0 0 rgb(255 255 255 / 0.04), 0 10px 30px -14px rgb(0 0 0 / 0.85);
+  --shadow-lift: inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 18px 44px -18px rgb(0 0 0 / 0.9);
 
-  --ease-slab: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-slab: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* =====================================================================
    Base
    ===================================================================== */
 @layer base {
+  :root {
+    /* Alto de la barra de navegación. Lo consume `historial.astro` para
+       pegar sus cabeceras de mes justo debajo, sin número mágico. */
+    --nav-h: 3.5rem;
+  }
+
   html {
     background: var(--color-void);
     color-scheme: dark;
@@ -54,27 +70,29 @@
   body {
     margin: 0;
     min-height: 100%;
-    background-color: var(--color-void);
     color: var(--color-chalk);
     font-family: var(--font-sans);
-    font-variation-settings: 'wdth' 100;
-    /* Rejilla hairline muy tenue: plancha metálica bajo todo. */
-    background-image:
-      linear-gradient(to right, rgb(255 255 255 / 0.022) 1px, transparent 1px),
-      linear-gradient(to bottom, rgb(255 255 255 / 0.022) 1px, transparent 1px);
-    background-size: 48px 48px;
+    /* Una sola lámpara, arriba y al centro. Sustituye a la rejilla
+       metálica: da atmósfera sin ensuciar el fondo. */
+    background-color: var(--color-void);
+    background-image: radial-gradient(
+      120% 70% at 50% -20%,
+      rgb(232 163 61 / 0.08),
+      transparent 60%
+    );
+    background-repeat: no-repeat;
     background-attachment: fixed;
   }
 
+  /* Los títulos van en serif y en caja mixta. Antes se forzaban a
+     mayúsculas aquí mismo, y era lo que hacía que la app gritara. */
   h1,
   h2,
   h3 {
     font-family: var(--font-display);
-    font-variation-settings: 'wdth' 118;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    text-transform: uppercase;
-    line-height: 0.95;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    line-height: 1.05;
     margin: 0;
   }
 
@@ -101,11 +119,17 @@
     height: 10px;
   }
   ::-webkit-scrollbar-track {
-    background: var(--color-void);
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
     background: var(--color-steel);
-    border: 2px solid var(--color-void);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-steel-hi);
+    background-clip: content-box;
   }
 }
 
@@ -118,28 +142,29 @@
     background: var(--color-panel);
     border: 1px solid var(--color-steel);
     border-radius: var(--radius-slab);
+    box-shadow: var(--shadow-slab);
   }
 
   .slab-lift {
-    box-shadow: var(--shadow-slab);
     transition:
-      transform 0.14s var(--ease-slab),
-      box-shadow 0.14s var(--ease-slab),
-      border-color 0.14s var(--ease-slab);
+      transform 0.2s var(--ease-slab),
+      box-shadow 0.2s var(--ease-slab),
+      border-color 0.2s var(--ease-slab);
   }
 
   .slab-lift:hover {
-    transform: translate(-2px, -2px);
+    transform: translateY(-2px);
     box-shadow: var(--shadow-lift);
     border-color: var(--color-steel-hi);
   }
 
-  /* --- Etiquetas de máquina: pequeñas, espaciadas, mayúsculas --- */
+  /* --- Etiqueta pequeña en versalitas. Ya no es una plantilla de
+         esténcil: menos tracking, sin mono, y pasa a Archivo. --- */
   .stencil {
-    font-family: var(--font-mono);
-    font-size: 0.625rem;
-    font-weight: 700;
-    letter-spacing: 0.16em;
+    font-family: var(--font-sans);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--color-ash);
   }
@@ -153,20 +178,19 @@
     min-height: 44px;
     padding: 0 1.1rem;
     border: 1px solid var(--color-steel-hi);
-    border-radius: var(--radius-slab);
+    border-radius: var(--radius-field);
     background: var(--color-panel-hi);
     color: var(--color-chalk);
-    font-family: var(--font-display);
-    font-variation-settings: 'wdth' 112;
-    font-weight: 700;
-    font-size: 0.8125rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.875rem;
+    letter-spacing: -0.005em;
     cursor: pointer;
     transition:
-      background 0.12s var(--ease-slab),
-      border-color 0.12s var(--ease-slab),
-      transform 0.08s var(--ease-slab);
+      background 0.18s var(--ease-slab),
+      border-color 0.18s var(--ease-slab),
+      color 0.18s var(--ease-slab),
+      transform 0.1s var(--ease-slab);
   }
 
   .btn:hover {
@@ -181,7 +205,8 @@
   .btn-primary {
     background: var(--color-sodium);
     border-color: var(--color-sodium);
-    color: var(--color-void);
+    color: #1a1204;
+    font-weight: 700;
   }
 
   .btn-primary:hover {
@@ -198,32 +223,35 @@
   .btn-ghost:hover {
     color: var(--color-chalk);
     background: var(--color-panel-hi);
+    border-color: var(--color-steel-hi);
   }
 
   .btn-danger:hover {
-    background: color-mix(in srgb, var(--color-signal) 18%, transparent);
+    background: color-mix(in srgb, var(--color-signal) 16%, transparent);
     border-color: var(--color-signal);
     color: var(--color-signal);
   }
 
   .btn-sm {
     min-height: 34px;
-    padding: 0 0.6rem;
-    font-size: 0.6875rem;
+    padding: 0 0.7rem;
+    font-size: 0.78125rem;
   }
 
   /* --- Campos --- */
   .field {
     width: 100%;
     min-height: 44px;
-    padding: 0.55rem 0.7rem;
+    padding: 0.55rem 0.75rem;
     background: var(--color-void);
     border: 1px solid var(--color-steel);
-    border-radius: var(--radius-slab);
+    border-radius: var(--radius-field);
     color: var(--color-chalk);
     font-family: var(--font-mono);
     font-size: 0.875rem;
-    transition: border-color 0.12s var(--ease-slab);
+    transition:
+      border-color 0.18s var(--ease-slab),
+      box-shadow 0.18s var(--ease-slab);
   }
 
   .field::placeholder {
@@ -232,6 +260,7 @@
 
   .field:focus {
     border-color: var(--color-sodium);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-sodium) 14%, transparent);
     outline: none;
   }
 
@@ -251,23 +280,67 @@
     font-family: var(--font-mono);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.04em;
+    letter-spacing: -0.045em;
     line-height: 0.9;
     color: var(--color-chalk);
   }
 
-  /* --- Cinta de advertencia para estados vacíos --- */
+  /* --- `− [cifra] +` como una sola pieza hundida. Es el control que más
+         se toca durante el entreno, así que es el más grande. --- */
+  .stepper {
+    display: flex;
+    align-items: stretch;
+    gap: 0.375rem;
+    padding: 0.375rem;
+    background: var(--color-void);
+    border: 1px solid var(--color-steel);
+    border-radius: var(--radius-slab);
+    transition:
+      border-color 0.18s var(--ease-slab),
+      box-shadow 0.18s var(--ease-slab);
+  }
+
+  .stepper:focus-within {
+    border-color: var(--color-sodium);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-sodium) 14%, transparent);
+  }
+
+  /* El campo no lleva marco propio: el marco es el del grupo. */
+  .stepper > .field {
+    min-height: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .stepper > .field:focus {
+    box-shadow: none;
+  }
+
+  .stepper > .btn {
+    border-color: transparent;
+    background: var(--color-panel-hi);
+  }
+
+  .stepper > .btn:hover {
+    background: var(--color-steel);
+    color: var(--color-sodium);
+  }
+
+  /* --- Filete de acento para estados vacíos. Antes eran rayas de cinta
+         de peligro; ahora es una sola línea que se apaga. --- */
   .hazard {
-    background-image: repeating-linear-gradient(
-      -45deg,
-      var(--color-sodium-dim) 0 10px,
-      transparent 10px 20px
+    background-image: linear-gradient(
+      90deg,
+      var(--color-sodium),
+      color-mix(in srgb, var(--color-sodium) 25%, transparent) 45%,
+      transparent 80%
     );
   }
 }
 
 /* =====================================================================
-   Atmósfera · grano de película sobre toda la página
+   Atmósfera · grano muy tenue sobre toda la página
    ===================================================================== */
 @layer utilities {
   .grain::after {
@@ -276,20 +349,21 @@
     inset: 0;
     z-index: 100;
     pointer-events: none;
-    opacity: 0.32;
-    mix-blend-mode: overlay;
+    opacity: 0.05;
+    mix-blend-mode: soft-light;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
   }
 
   /* Entrada escalonada al cargar. */
   .rise {
-    animation: rise 0.5s var(--ease-slab) both;
+    animation: rise 0.6s var(--ease-slab) both;
   }
 
   @keyframes rise {
     from {
       opacity: 0;
-      transform: translateY(10px);
+      transform: translateY(12px);
+      filter: blur(6px);
     }
   }
 
@@ -303,7 +377,7 @@
       background-color: transparent;
     }
     20% {
-      background-color: color-mix(in srgb, var(--color-sodium) 30%, transparent);
+      background-color: color-mix(in srgb, var(--color-sodium) 26%, transparent);
     }
   }
 }
@@ -315,6 +389,10 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .rise {
+    filter: none;
   }
 
   .slab-lift:hover {

@@ -89,23 +89,32 @@ type LoggedSet = {
   isWarmup: boolean;
 };
 
-/** Reproduce el marcado de SetRow.astro para la fila recién creada. */
+/**
+ * Reproduce el marcado de SetRow.astro para la fila recién creada.
+ *
+ * Las clases de aquí y las de src/components/SetRow.astro tienen que ser
+ * IDÉNTICAS: si no, la fila que aparece al registrar se ve distinta de la
+ * misma fila después de recargar. Se cambian las dos en el mismo commit.
+ *
+ * Y van escritas literales a propósito: Tailwind v4 escanea este archivo,
+ * así que una clase interpolada se purga del CSS y se queda sin estilo.
+ */
 function renderRow(set: LoggedSet, isPR: boolean): HTMLLIElement {
   const row = document.createElement('li');
   row.className =
-    'flex items-center gap-3 border-b border-steel py-2.5 last:border-b-0 rise';
-  if (set.isWarmup) row.classList.add('opacity-55');
+    'flex items-center gap-3 border-b border-steel py-3 last:border-b-0 rise';
+  if (set.isWarmup) row.classList.add('opacity-50');
   if (isPR) row.classList.add('flare');
   row.dataset.setRow = '';
 
   const number = document.createElement('span');
-  number.className = `readout w-7 shrink-0 text-center text-sm ${
+  number.className = `readout w-8 shrink-0 text-center text-xs ${
     set.isWarmup ? 'text-ash-dim' : 'text-sodium'
   }`;
   number.textContent = set.isWarmup ? 'W' : String(set.setNumber);
 
   const body = document.createElement('div');
-  body.className = 'flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5';
+  body.className = 'flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1';
 
   const parts: [string, string?][] = [];
   if (set.weight !== null) parts.push([trim(set.weight), 'kg']);
@@ -115,11 +124,11 @@ function renderRow(set: LoggedSet, isPR: boolean): HTMLLIElement {
 
   for (const [value, unit] of parts) {
     const span = document.createElement('span');
-    span.className = 'readout text-lg whitespace-nowrap';
+    span.className = 'readout text-xl whitespace-nowrap';
     span.textContent = value;
     if (unit) {
       const u = document.createElement('span');
-      u.className = 'stencil ml-0.5 text-ash';
+      u.className = 'stencil ml-1 text-ash-dim';
       u.textContent = unit;
       span.append(u);
     }
@@ -135,7 +144,8 @@ function renderRow(set: LoggedSet, isPR: boolean): HTMLLIElement {
 
   if (isPR) {
     const badge = document.createElement('span');
-    badge.className = 'stencil border border-sodium px-1 text-sodium';
+    badge.className =
+      'stencil rounded-full border border-sodium px-1.5 py-0.5 text-sodium';
     badge.textContent = 'Récord';
     body.append(badge);
   }
@@ -148,11 +158,24 @@ function renderRow(set: LoggedSet, isPR: boolean): HTMLLIElement {
   remove.className = 'shrink-0';
   remove.innerHTML =
     `<input type="hidden" name="id" value="${set.id}">` +
-    `<button type="submit" class="stencil px-1 hover:text-signal" ` +
+    `<button type="submit" class="stencil flex size-9 items-center justify-center text-ash-dim hover:text-signal" ` +
     `aria-label="Borrar serie ${set.setNumber}">✕</button>`;
 
   row.append(number, body, remove);
   return row;
+}
+
+/** La lista de series de un ejercicio, creándola si esta era la primera. */
+function setsListOf(card: HTMLElement): HTMLUListElement {
+  const existing = card.querySelector<HTMLUListElement>('[data-sets]');
+  if (existing) return existing;
+
+  // Primera serie del ejercicio: sustituye el "sin series todavía".
+  const placeholder = card.querySelector('[data-sets-empty]');
+  const created = document.createElement('ul');
+  created.dataset.sets = '';
+  placeholder?.replaceWith(created);
+  return created;
 }
 
 const form = document.querySelector<HTMLFormElement>('[data-log-form]');
@@ -163,7 +186,7 @@ form?.addEventListener('submit', async (event) => {
   const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
   if (submit) submit.disabled = true;
 
-  const { data, error } = await actions.logSet(new FormData(form));
+  const { data, error } = await actions.logRound(new FormData(form));
 
   if (submit) submit.disabled = false;
 
@@ -174,21 +197,20 @@ form?.addEventListener('submit', async (event) => {
     return;
   }
 
-  const list =
-    document.querySelector<HTMLUListElement>('[data-sets]') ??
-    (() => {
-      // Primera serie del ejercicio: sustituye el "sin series todavía".
-      const placeholder = document.querySelector('[data-sets-empty]');
-      const created = document.createElement('ul');
-      created.dataset.sets = '';
-      placeholder?.replaceWith(created);
-      return created;
-    })();
+  // Cada serie de la ronda cae en la tarjeta de su propio ejercicio.
+  let working = false;
+  for (const entry of data.entries) {
+    const card = document.querySelector<HTMLElement>(
+      `[data-member="${entry.sessionExerciseId}"]`,
+    );
+    if (!card) continue;
 
-  list.append(renderRow(data.set as LoggedSet, data.isPR));
+    setsListOf(card).append(renderRow(entry.set as LoggedSet, entry.isPR));
+    if (!entry.set.isWarmup) working = true;
+  }
 
-  // La pestaña del ejercicio lleva la cuenta de series completadas.
-  if (!data.set.isWarmup) {
+  // La pestaña del bloque lleva la cuenta de rondas cerradas.
+  if (working) {
     const tab = document.querySelector<HTMLElement>('nav a[aria-current="true"]');
     const counter = tab?.querySelector<HTMLElement>('.text-go');
     if (counter) {
@@ -204,7 +226,12 @@ form?.addEventListener('submit', async (event) => {
   const rest = Number(form.dataset.rest);
   if (rest > 0) startRest(form, rest);
 
-  // El RPE es de cada serie, no se arrastra a la siguiente.
-  const rpe = form.querySelector<HTMLInputElement>('#f-rpe');
-  if (rpe) rpe.value = '';
+  // El RPE es de cada serie, no se arrastra a la siguiente. Los campos no
+  // cuelgan del <form> —van asociados con el atributo `form`—, así que se
+  // recorre form.elements y no el subárbol del formulario.
+  for (const element of Array.from(form.elements)) {
+    if (element instanceof HTMLInputElement && element.name === 'rpe') {
+      element.value = '';
+    }
+  }
 });

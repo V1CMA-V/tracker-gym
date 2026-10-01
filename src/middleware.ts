@@ -26,7 +26,7 @@ const isAsset = (path: string) =>
   path.startsWith('/node_modules/') ||
   /\.[a-z0-9]+$/i.test(path); // favicon.svg, .css, .js, .map
 
-/** `logSet` se llama por fetch desde la isla de la sesión (scripts/session.ts:166). */
+/** `logRound` se llama por fetch desde la isla de la sesión (scripts/session.ts). */
 const isActionFetch = (path: string) => path.startsWith('/_actions/');
 
 const guard = defineMiddleware(async (context, next) => {
@@ -42,7 +42,7 @@ const guard = defineMiddleware(async (context, next) => {
   }
 
   if (!isAuthenticated || !userId) {
-    // Un 302 a HTML rompería el `await actions.logSet()` del cliente.
+    // Un 302 a HTML rompería el `await actions.logRound()` del cliente.
     if (isActionFetch(pathname)) return new Response(null, { status: 401 });
 
     const back = pathname + context.url.search;

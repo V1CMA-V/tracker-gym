@@ -23,7 +23,7 @@ const fullTitle = title === 'Tracker Gym' ? title : `${title} · Tracker Gym`
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0B0B0C" />
+    <meta name="theme-color" content="#0A0A0B" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="generator" content={Astro.generator} />
     <title>{fullTitle}</title>
@@ -31,7 +31,13 @@ const fullTitle = title === 'Tracker Gym' ? title : `${title} · Tracker Gym`
   </head>
   <body class="grain min-h-dvh">
     {!bare && <Nav />}
-    <main class="mx-auto max-w-5xl px-4 pt-8 pb-24">
+    {/*
+      Las páginas `bare` (login, callback y la sesión activa) se dibujan a
+      sangre: cada una centra o pega su propio contenido, así que el main
+      no les mete márgenes. Así la barra de la sesión llega al borde de la
+      pantalla sin compensar con márgenes negativos.
+    */}
+    <main class:list={[!bare && 'mx-auto max-w-5xl px-4 pt-9 pb-24']}>
       <slot />
     </main>
   </body>

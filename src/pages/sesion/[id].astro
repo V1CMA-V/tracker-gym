@@ -27,7 +27,7 @@ if (cancelled && !cancelled.error) return Astro.redirect('/', 303)
 
 // El resto recarga esta pantalla conservando el ejercicio abierto.
 const mutations = [
-  Astro.getActionResult(actions.logSet),
+  Astro.getActionResult(actions.logRound),
   Astro.getActionResult(actions.deleteSet),
   Astro.getActionResult(actions.addExerciseToSession),
 ]
@@ -74,16 +74,17 @@ const session = await prisma.workoutSession.findFirst({
 if (!session) return Astro.rewrite('/404')
 if (session.status !== 'in_progress') return Astro.redirect('/historial', 303)
 
-// Ejercicio abierto por querystring: navegar entre ejercicios son enlaces
+const exercises = session.exercises
+
+// Ejercicio abierto por querystring: navegar entre bloques son enlaces
 // normales, así que funciona sin JavaScript.
 const requested = Number(Astro.url.searchParams.get('e') ?? '0')
 const index = Number.isFinite(requested)
-  ? Math.min(Math.max(0, requested), Math.max(0, session.exercises.length - 1))
+  ? Math.min(Math.max(0, requested), Math.max(0, exercises.length - 1))
   : 0
-const current = session.exercises[index]
 
 // Plan de la rutina: se trae entero, no solo el del ejercicio abierto,
-// porque hace falta saber si el siguiente va encadenado (superserie).
+// porque hace falta saber qué ejercicios van encadenados (superserie).
 const routinePlan = session.routineId
   ? await prisma.routineExercise.findMany({
       where: { routineId: session.routineId },
@@ -113,31 +114,168 @@ const routinePlan = session.routineId
   : []
 
 const planByExercise = new Map(routinePlan.map((re) => [re.exerciseId, re]))
-const target = current ? (planByExercise.get(current.exercise.id) ?? null) : null
 
-// "La última vez": series del entreno completado más reciente con este
-// ejercicio. Sale de la vista v_sets_detail.
+// ---------------------------------------------------------------------
+// El bloque abierto
+// ---------------------------------------------------------------------
+
+/** ¿Este ejercicio de la sesión va pegado al de arriba, sin descanso? */
+function chainedAt(i: number): boolean {
+  const se = exercises[i]
+  if (!se || i === 0) return false
+  return planByExercise.get(se.exercise.id)?.supersetWithPrev ?? false
+}
+
+// Una superserie se entrena como una sola cosa: una serie de cada ejercicio,
+// seguidas, y recién entonces se descansa. Así que la pantalla no abre un
+// ejercicio sino el bloque entero —la racha de encadenados— y registra la
+// ronda completa de golpe. Un ejercicio suelto es un bloque de uno y se ve
+// exactamente igual que siempre.
+let blockStart = index
+while (chainedAt(blockStart)) blockStart--
+let blockEnd = index
+while (chainedAt(blockEnd + 1)) blockEnd++
+
+const block = exercises.slice(blockStart, blockEnd + 1)
+const isSuperset = block.length > 1
+
+type SessionExercise = (typeof exercises)[number]
 type LastSet = { set_number: number; weight: string | null; reps: number | null }
-const lastTime: LastSet[] = current
-  ? await prisma.$queryRaw<LastSet[]>`
-      SELECT set_number, weight, reps
-      FROM v_sets_detail
-      WHERE user_id = ${user.id}::uuid
-        AND exercise_id = ${current.exercise.id}::uuid
-        AND NOT is_warmup
-        AND session_id = (
-          SELECT session_id FROM v_sets_detail
-          WHERE user_id = ${user.id}::uuid
-            AND exercise_id = ${current.exercise.id}::uuid
-          ORDER BY started_at DESC
-          LIMIT 1
-        )
-      ORDER BY set_number
-    `
-  : []
+
+/** Discos de 1.25 kg por lado: no tiene sentido precargar 47.3 kg. */
+const toPlate = (kg: number) => Math.round(kg * 2) / 2
+
+/**
+ * Todo lo que la pantalla necesita de un ejercicio abierto: su plan, lo que
+ * lleva hecho hoy, lo que hizo la última vez y los valores que se precargan.
+ */
+async function describe(se: SessionExercise, at: number) {
+  const target = planByExercise.get(se.exercise.id) ?? null
+  const plan = target ? plannedSets(target) : []
+  const hasScheme = (target?.sets.length ?? 0) > 0
+
+  // "La última vez": series del entreno completado más reciente con este
+  // ejercicio. Sale de la vista v_sets_detail.
+  const lastTime = await prisma.$queryRaw<LastSet[]>`
+    SELECT set_number, weight, reps
+    FROM v_sets_detail
+    WHERE user_id = ${user.id}::uuid
+      AND exercise_id = ${se.exercise.id}::uuid
+      AND NOT is_warmup
+      AND session_id = (
+        SELECT session_id FROM v_sets_detail
+        WHERE user_id = ${user.id}::uuid
+          AND exercise_id = ${se.exercise.id}::uuid
+        ORDER BY started_at DESC
+        LIMIT 1
+      )
+    ORDER BY set_number
+  `
+
+  const logged = se.sets.filter((s) => !s.isWarmup)
+  const nextSetNumber = logged.length + 1
+  const plannedNow = plan[nextSetNumber - 1] ?? null
+  /** La que viene después de la que se va a registrar. */
+  const plannedNext = plan[nextSetNumber] ?? null
+
+  // Precarga: lo que se hizo la última vez en la serie que toca ahora, o el
+  // objetivo de la rutina. Se escribe menos y se entrena más.
+  const reference = lastTime[nextSetNumber - 1] ?? lastTime.at(-1)
+  const lastLogged = logged.at(-1)
+
+  // El peso de un drop-set no se escribe: se calcula bajando el porcentaje
+  // indicado al peso de la serie que acaba de hacerse.
+  const droppedWeight =
+    plannedNow?.isDropSet && plannedNow.dropPct !== null && lastLogged?.weight != null
+      ? toPlate(num(lastLogged.weight)! * (1 - plannedNow.dropPct / 100))
+      : null
+
+  const prefillWeight =
+    plannedNow?.weight ??
+    droppedWeight ??
+    (reference?.weight != null ? Number(reference.weight) : num(target?.targetWeight))
+
+  // Con esquema manda el plan: si la rutina dice 12/10/8, la tercera serie
+  // tiene que proponer 8, no las 12 que se hicieron la vez pasada.
+  const prefillReps = hasScheme
+    ? plannedNow?.toFailure
+      ? null
+      : (plannedNow?.repsMin ?? null)
+    : (reference?.reps ?? target?.targetRepsMin ?? null)
+
+  const kind = se.exercise.kind
+  return {
+    at,
+    se,
+    target,
+    plan,
+    lastTime,
+    nextSetNumber,
+    plannedNow,
+    plannedNext,
+    prefillWeight,
+    prefillReps,
+    targetLabel: target ? summarizeScheme(plan) : null,
+    usesWeight: kind === 'weight_reps',
+    usesReps: kind === 'weight_reps' || kind === 'bodyweight',
+    usesTime: kind === 'duration' || kind === 'distance',
+    usesDistance: kind === 'distance',
+  }
+}
+
+const members = await Promise.all(block.map((se, i) => describe(se, blockStart + i)))
+
+// Entre los miembros de una superserie no se descansa: el descanso lo marca
+// el último del bloque, al cerrar la ronda. Tampoco se descansa antes de un
+// drop-set, que continúa la serie anterior con menos peso.
+const closer = members.at(-1) ?? null
+const skipRest = Boolean(closer?.plannedNext?.isDropSet)
+const restSeconds = skipRest ? 0 : (closer?.target?.restSeconds ?? 90)
+
+/** Series planificadas de un ejercicio; 0 si no está en la rutina. */
+const plannedCount = (exerciseId: string) => {
+  const re = planByExercise.get(exerciseId)
+  return re ? plannedSets(re).length : 0
+}
+
+// El riel de arriba también va por bloque: la superserie es una sola parada.
+type Tab = {
+  at: number
+  names: string[]
+  done: number
+  planned: number
+  superset: boolean
+}
+const tabs: Tab[] = []
+exercises.forEach((se, i) => {
+  const done = se.sets.filter((s) => !s.isWarmup).length
+  const planned = plannedCount(se.exercise.id)
+  const open = tabs.at(-1)
+  if (chainedAt(i) && open) {
+    open.names.push(se.exercise.name)
+    // En una superserie la cuenta son rondas cerradas, no series sueltas: el
+    // ejercicio que va más atrasado marca por dónde va el bloque.
+    open.done = Math.min(open.done, done)
+    // Y las rondas que faltan las marca el ejercicio con el plan más largo.
+    open.planned = Math.max(open.planned, planned)
+    open.superset = true
+  } else {
+    tabs.push({ at: i, names: [se.exercise.name], done, planned, superset: false })
+  }
+})
+
+/**
+ * Un bloque está cerrado cuando cumplió su plan. Sin plan no hay meta que
+ * cumplir, así que basta con haber registrado algo.
+ */
+const isComplete = (t: Tab) => (t.planned > 0 ? t.done >= t.planned : t.done > 0)
+
+const tabIndex = tabs.findIndex((tab) => tab.at === blockStart)
+const previousTab = tabIndex > 0 ? tabs[tabIndex - 1] : null
+const nextTab = tabIndex >= 0 ? (tabs[tabIndex + 1] ?? null) : null
 
 // Catálogo para agregar un ejercicio sobre la marcha.
-const alreadyIn = new Set(session.exercises.map((se) => se.exercise.id))
+const alreadyIn = new Set(exercises.map((se) => se.exercise.id))
 const catalog = await prisma.exercise.findMany({
   where: { isArchived: false, OR: [{ userId: null }, { userId: user.id }] },
   orderBy: { name: 'asc' },
@@ -162,84 +300,53 @@ const pickable: PickableExercise[] = catalog
     isCustom: e.userId !== null,
   }))
 
-const kind = current?.exercise.kind
-const usesWeight = kind === 'weight_reps'
-const usesReps = kind === 'weight_reps' || kind === 'bodyweight'
-const usesTime = kind === 'duration' || kind === 'distance'
-const usesDistance = kind === 'distance'
-
-// Series planificadas y cuál toca ahora.
-const plan = target ? plannedSets(target) : []
-const hasScheme = (target?.sets.length ?? 0) > 0
-const nextSetNumber = (current?.sets.filter((s) => !s.isWarmup).length ?? 0) + 1
-const plannedNow = plan[nextSetNumber - 1] ?? null
-/** La que viene después de la que se va a registrar. */
-const plannedNext = plan[nextSetNumber] ?? null
-
-// Precarga: lo que se hizo la última vez en la serie que toca ahora, o el
-// objetivo de la rutina. Se escribe menos y se entrena más.
-const reference = lastTime[nextSetNumber - 1] ?? lastTime.at(-1)
-const lastLogged = current?.sets.filter((s) => !s.isWarmup).at(-1)
-
-/** Discos de 1.25 kg por lado: no tiene sentido precargar 47.3 kg. */
-const toPlate = (kg: number) => Math.round(kg * 2) / 2
-
-// El peso de un drop-set no se escribe: se calcula bajando el porcentaje
-// indicado al peso de la serie que acaba de hacerse.
-const droppedWeight =
-  plannedNow?.isDropSet && plannedNow.dropPct !== null && lastLogged?.weight != null
-    ? toPlate(num(lastLogged.weight)! * (1 - plannedNow.dropPct / 100))
-    : null
-
-const prefillWeight =
-  plannedNow?.weight ??
-  droppedWeight ??
-  (reference?.weight != null ? Number(reference.weight) : num(target?.targetWeight))
-
-// Con esquema manda el plan: si la rutina dice 12/10/8, la tercera serie
-// tiene que proponer 8, no las 12 que se hicieron la vez pasada.
-const prefillReps = hasScheme
-  ? plannedNow?.toFailure
-    ? null
-    : (plannedNow?.repsMin ?? null)
-  : (reference?.reps ?? target?.targetRepsMin ?? null)
-
-const totalSets = session.exercises.reduce(
+const totalSets = exercises.reduce(
   (sum, se) => sum + se.sets.filter((s) => !s.isWarmup).length,
   0,
 )
 
-// Superserie: el ejercicio que sigue en la sesión viene encadenado a este.
-const nextInSession = session.exercises[index + 1]
-const chainedNext = nextInSession
-  ? (planByExercise.get(nextInSession.exercise.id)?.supersetWithPrev ?? false)
-  : false
-const chainedPrev = target?.supersetWithPrev ?? false
-const previousInSession = index > 0 ? session.exercises[index - 1] : undefined
+// Progreso de la sesión para la barra de la cabecera. Los bloques sin plan
+// aportan lo ya hecho, así que un entreno libre marca 100 % y no 0 %.
+const plannedTotal = tabs.reduce((sum, t) => sum + (t.planned || t.done), 0)
+const progressPct =
+  plannedTotal > 0 ? Math.min(100, Math.round((totalSets / plannedTotal) * 100)) : 0
 
-// No se descansa ni antes de un drop-set ni entre los miembros de una
-// superserie: el descanso del ejercicio vale al cerrar el bloque.
-const skipRest = Boolean(plannedNext?.isDropSet) || chainedNext
-const restSeconds = skipRest ? 0 : (target?.restSeconds ?? 90)
+/**
+ * Los campos de la ronda viven dentro de la tarjeta de cada ejercicio, pero
+ * el `<form>` va aparte: las series ya registradas traen su propio
+ * formulario de borrado y los formularios no se pueden anidar. El atributo
+ * `form` los asocia igual, y tanto el navegador como `new FormData(form)`
+ * los recogen en orden del documento, que es el orden del bloque.
+ */
+const ROUND_FORM = 'log-round'
 
-const targetLabel = target ? summarizeScheme(plan) : null
+/**
+ * Una action conservando el bloque abierto. Sin esto, el POST normal —el que
+ * hace el navegador cuando no hay JavaScript— vuelve a `/sesion/<id>` pelado
+ * y te saca del ejercicio en el que estabas.
+ */
+const keepingBlock = (queryString: string) =>
+  `?e=${blockStart}&${queryString.replace(/^\?/, '')}`
 ---
 
 <Layout title={session.routineName ?? 'Entreno libre'} bare>
   <!-- ===== Barra de sesión ===== -->
-  <header class="sticky top-0 z-50 border-b border-steel bg-void/95 backdrop-blur-sm">
-    <div class="mx-auto flex max-w-3xl items-center gap-3 px-4 py-2.5">
-      <span class="size-2 shrink-0 animate-pulse rounded-full bg-signal"></span>
+  <header class="sticky top-0 z-50 border-b border-steel bg-void/85 backdrop-blur-xl">
+    <div class="mx-auto flex max-w-2xl items-center gap-3 px-4 py-3">
+      <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-sodium" aria-hidden="true"
+      ></span>
 
       <div class="min-w-0 flex-1">
-        <p class="stencil text-sodium">En curso</p>
-        <p class="truncate text-sm font-semibold">
+        <p class="truncate font-display text-base leading-tight">
           {session.routineName ?? 'Entreno libre'}
+        </p>
+        <p class="stencil mt-0.5 text-ash-dim">
+          Bloque {tabIndex + 1} de {tabs.length}
         </p>
       </div>
 
       <p
-        class="readout shrink-0 text-lg"
+        class="readout shrink-0 text-base text-ash"
         data-elapsed
         data-started={session.startedAt.toISOString()}
         aria-label="Tiempo transcurrido"
@@ -247,345 +354,601 @@ const targetLabel = target ? summarizeScheme(plan) : null
         --:--
       </p>
 
-      <a href="#terminar" class="btn btn-sm shrink-0">Terminar</a>
+      <a href="#terminar" class="btn btn-sm btn-ghost shrink-0">Terminar</a>
+    </div>
+
+    {/* Progreso de la sesión: una línea, sin texto que competir. */}
+    <div class="h-[2px] w-full bg-steel" aria-hidden="true">
+      <div
+        class="h-full bg-sodium transition-[width] duration-500"
+        style={`width:${progressPct}%`}
+      >
+      </div>
     </div>
   </header>
 
-  <div class="mx-auto max-w-3xl px-4 pt-5 pb-28">
+  <div class="mx-auto max-w-2xl px-4 pt-6 pb-16">
     {
       error && (
         <p
           role="alert"
-          class="mb-4 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+          class="mb-5 rounded-slab border border-signal/40 bg-signal/10 px-4 py-3 text-sm text-signal"
         >
           {error}
         </p>
       )
     }
 
-    <!-- ===== Navegación entre ejercicios ===== -->
-    <nav class="mb-5 flex gap-1.5 overflow-x-auto pb-1" aria-label="Ejercicios">
-      {
-        session.exercises.map((se, i) => {
-          const done = se.sets.filter((s) => !s.isWarmup).length
-          return (
-            <a
-              href={`?e=${i}`}
-              aria-current={i === index ? 'true' : undefined}
-              class:list={[
-                'slab flex shrink-0 items-center gap-2 px-2.5 py-1.5 transition-colors',
-                i === index
-                  ? 'border-sodium bg-sodium/10'
-                  : 'hover:border-steel-hi',
-              ]}
-            >
-              <span class="readout text-xs text-ash">
-                {String(i + 1).padStart(2, '0')}
-              </span>
-              <span class="max-w-32 truncate text-xs">{se.exercise.name}</span>
-              {done > 0 && (
-                <span class="readout text-xs text-go">{done}</span>
-              )}
-            </a>
-          )
-        })
-      }
+    <!--
+      ===== Navegación entre bloques =====
+      session.ts localiza la parada abierta con `nav a[aria-current="true"]`
+      y, dentro de ella, el contador por `.text-go`. Eso obliga a tres
+      cosas: un solo aria-current="true" en toda la página, siempre sobre
+      un <a> dentro de un <nav>, y un único .text-go dentro de él. Además
+      el <a> activo tiene que ser un contenedor flex, porque cuando el
+      bloque no tiene series el script *crea* el contador y lo añade como
+      hijo directo suyo. La lista de abajo marca la fila actual solo con
+      fondo, sin aria-current, para no robarle el selector.
+    -->
+    <nav class="mb-7" aria-label="Ejercicios">
+      <ol class="flex flex-wrap items-center gap-1.5">
+        {
+          tabs.map((tab, i) => {
+            const current = tab.at === blockStart
+            const complete = isComplete(tab)
+
+            return (
+              <li class="shrink-0">
+                {current ? (
+                  <a
+                    href={`?e=${tab.at}`}
+                    aria-current="true"
+                    class="flex h-9 items-center gap-2 rounded-full border border-sodium/50 bg-sodium/10 pr-3 pl-2.5"
+                  >
+                    <span class="readout text-[0.6875rem] text-sodium">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span class="max-w-40 truncate font-display text-sm leading-none sm:max-w-64">
+                      {tab.names.join(' + ')}
+                    </span>
+                    {tab.done > 0 && (
+                      <span class="readout text-xs text-go">{tab.done}</span>
+                    )}
+                  </a>
+                ) : (
+                  <a
+                    href={`?e=${tab.at}`}
+                    title={tab.names.join(' ⛓ ')}
+                    aria-label={`${tab.names.join(' y ')}: ${tab.done} de ${tab.planned || '?'} series`}
+                    class:list={[
+                      'flex size-9 items-center justify-center rounded-full border transition-colors',
+                      complete
+                        ? 'border-go/40 bg-go/10 text-go'
+                        : 'border-steel text-ash-dim hover:border-steel-hi hover:text-chalk',
+                    ]}
+                  >
+                    <span class="readout text-[0.6875rem]">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                  </a>
+                )}
+              </li>
+            )
+          })
+        }
+      </ol>
+
+      <details class="group mt-2.5">
+        <summary
+          class="stencil flex cursor-pointer list-none items-center gap-1.5 py-1 transition-colors hover:text-chalk"
+        >
+          <span class="transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+          <span class="group-open:hidden">Ver los {tabs.length} ejercicios</span>
+          <span class="hidden group-open:inline">Ocultar la lista</span>
+        </summary>
+
+        <ol class="slab mt-2 divide-y divide-steel overflow-hidden">
+          {
+            tabs.map((tab, i) => {
+              const current = tab.at === blockStart
+              const complete = isComplete(tab)
+
+              return (
+                <li>
+                  {/* Sin aria-current: el único vive en el riel de arriba. */}
+                  <a
+                    href={`?e=${tab.at}`}
+                    class:list={[
+                      'flex items-center gap-3 px-4 py-3 transition-colors',
+                      current ? 'bg-sodium/[0.07]' : 'hover:bg-panel-hi',
+                    ]}
+                  >
+                    <span
+                      class:list={[
+                        'readout w-6 shrink-0 text-[0.6875rem]',
+                        current ? 'text-sodium' : 'text-ash-dim',
+                      ]}
+                    >
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span class="min-w-0 flex-1 truncate font-display text-base">
+                      {tab.names.join(' + ')}
+                      {tab.superset && <span class="ml-2 text-sm text-sodium">⛓</span>}
+                    </span>
+                    <span
+                      class:list={[
+                        'readout shrink-0 text-xs',
+                        complete ? 'text-go' : 'text-ash',
+                      ]}
+                    >
+                      {tab.done}
+                      {tab.planned > 0 && <span class="text-ash-dim">/{tab.planned}</span>}
+                    </span>
+                  </a>
+                </li>
+              )
+            })
+          }
+        </ol>
+      </details>
     </nav>
 
     {
-      current ? (
+      members.length > 0 ? (
         <article data-exercise>
-          <header class="mb-5">
-            <h1 class="text-3xl sm:text-4xl">{current.exercise.name}</h1>
-            <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-              {current.exercise.equipment && (
-                <span class="stencil">{current.exercise.equipment}</span>
-              )}
-              {targetLabel && (
-                <span class="stencil text-sodium">Objetivo {targetLabel}</span>
-              )}
-            </div>
-
-            {usesWeight && prefillWeight !== null && (
-              <div class="mt-3">
-                <PlateStrip kg={prefillWeight} />
-              </div>
-            )}
-
-            {/* Encadenados: de dónde viene y a dónde sigue sin descansar */}
-            {(chainedPrev || chainedNext) && (
-              <p class="stencil mt-3 border-l-2 border-sodium pl-2.5 text-sodium">
-                Superserie ·{' '}
-                {chainedPrev && previousInSession
-                  ? `va pegado a ${previousInSession.exercise.name}`
-                  : ''}
-                {chainedPrev && chainedNext ? ' · ' : ''}
-                {chainedNext && nextInSession
-                  ? `al terminar pasa a ${nextInSession.exercise.name} sin descansar`
-                  : ''}
+          <!-- ===== El ejercicio abierto ===== -->
+          <header class="mb-7">
+            {isSuperset && (
+              <p class="stencil mb-2.5 inline-flex items-center gap-1.5 rounded-full border border-sodium/40 px-2.5 py-1 text-sodium">
+                ⛓ Superserie · {members.length} seguidos sin descanso
               </p>
             )}
-
-            {target?.notes && (
-              <p class="mt-3 border-l-2 border-steel-hi pl-2.5 text-sm text-ash">
-                {target.notes}
-              </p>
-            )}
+            <h1
+              class:list={[
+                isSuperset
+                  ? 'text-[1.875rem] leading-[1.08] sm:text-4xl'
+                  : 'text-[2.375rem] leading-[1.03] sm:text-5xl',
+              ]}
+            >
+              {members.map((m) => m.se.exercise.name).join(' + ')}
+            </h1>
           </header>
 
-          {/* Plan serie a serie, con la que toca resaltada */}
-          {plan.length > 0 && usesReps && (
-            <section class="slab mb-5 px-3 py-2.5">
-              <p class="stencil mb-1">
-                Plan · serie{' '}
-                <span class="readout text-chalk">
-                  {Math.min(nextSetNumber, plan.length)}
-                </span>{' '}
-                de <span class="readout text-chalk">{plan.length}</span>
-              </p>
-              <SetPlan sets={plan} current={nextSetNumber} />
-            </section>
-          )}
+          <div class="grid gap-7">
+            {members.map((m, i) => (
+              <section
+                class:list={[
+                  'grid gap-5',
+                  isSuperset && 'slab bg-panel/60 p-4',
+                ]}
+                data-member={m.se.id}
+              >
+                {/*
+                  CAMPO 1/6 del miembro. Ver el bloque de orden obligatorio
+                  más abajo: la action cuadra arrays paralelos por índice.
+                */}
+                <input
+                  type="hidden"
+                  name="sessionExerciseId"
+                  value={m.se.id}
+                  form={ROUND_FORM}
+                />
 
-          {plannedNow?.isDropSet && (
-            <p class="mb-5 border-l-2 border-sodium bg-sodium/10 px-3 py-2 text-sm text-sodium">
-              Drop-set: sin descanso,{' '}
-              {plannedNow.dropPct !== null
-                ? `baja ${plannedNow.dropPct}% el peso`
-                : 'baja el peso'}{' '}
-              y saca {repsLabel(plannedNow)}.
-            </p>
-          )}
+                {/* Identidad del ejercicio + en qué serie va */}
+                <div class="flex items-end justify-between gap-4">
+                  <div class="min-w-0">
+                    {isSuperset && (
+                      <h2 class="truncate text-xl leading-tight">{m.se.exercise.name}</h2>
+                    )}
+                    <p class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      {m.se.exercise.equipment && (
+                        <span class="stencil text-ash-dim">{m.se.exercise.equipment}</span>
+                      )}
+                      {m.targetLabel && (
+                        <span class="stencil text-sodium">{m.targetLabel}</span>
+                      )}
+                    </p>
+                  </div>
 
-          {/* La última vez */}
-          {lastTime.length > 0 && (
-            <div class="slab mb-5 px-3.5 py-2.5">
-              <p class="stencil">La última vez</p>
-              <p class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-                {lastTime.map((s) => (
-                  <span class="readout text-sm text-ash">
-                    {s.weight != null ? `${trim(Number(s.weight))}×` : ''}
-                    {s.reps ?? '—'}
-                  </span>
-                ))}
-              </p>
-            </div>
-          )}
+                  <p class="shrink-0 text-right">
+                    <span class="stencil mb-1.5 block text-ash-dim">Serie</span>
+                    <span class="readout text-3xl">
+                      {m.plan.length > 0
+                        ? Math.min(m.nextSetNumber, m.plan.length)
+                        : m.nextSetNumber}
+                    </span>
+                    {m.plan.length > 0 && (
+                      <span class="readout text-base text-ash-dim">/{m.plan.length}</span>
+                    )}
+                  </p>
+                </div>
 
-          {/* Series registradas */}
-          <section class="slab mb-5 px-3.5 py-1">
-            {current.sets.length > 0 ? (
-              <ul data-sets>
-                {current.sets.map((set) => (
-                  <SetRow {...set} kind={current.exercise.kind} />
-                ))}
-              </ul>
-            ) : (
-              <p class="py-6 text-center text-sm text-ash-dim" data-sets-empty>
-                Sin series todavía.
-              </p>
-            )}
-          </section>
+                {/* Lo que toca hacer. Va ANTES de los campos: primero se lee
+                    qué hay que sacar, después se teclea lo que salió. */}
+                {(
+                  (m.plan.length > 0 && m.usesReps) ||
+                  (m.usesWeight && m.prefillWeight !== null) ||
+                  m.lastTime.length > 0
+                ) && (
+                  <div class="grid gap-4 rounded-slab border border-steel bg-panel/50 p-4 sm:grid-cols-[1fr_auto]">
+                    {m.plan.length > 0 && m.usesReps && (
+                      <div class="min-w-0">
+                        <p class="stencil mb-2 text-ash-dim">Plan</p>
+                        <SetPlan
+                          sets={m.plan}
+                          current={m.nextSetNumber}
+                          done={m.nextSetNumber - 1}
+                        />
+                      </div>
+                    )}
 
-          {/* Registrar serie */}
+                    <div class="grid content-start gap-3.5 sm:text-right">
+                      {m.usesWeight && m.prefillWeight !== null && (
+                        <div>
+                          <p class="stencil mb-2 text-ash-dim">Discos por lado</p>
+                          <PlateStrip kg={m.prefillWeight} class="sm:justify-end" />
+                        </div>
+                      )}
+                      {m.lastTime.length > 0 && (
+                        <div>
+                          <p class="stencil mb-2 text-ash-dim">La última vez</p>
+                          <p class="flex flex-wrap gap-x-3 gap-y-1 sm:justify-end">
+                            {m.lastTime.map((s) => (
+                              <span class="readout text-sm text-ash">
+                                {s.weight != null ? `${trim(Number(s.weight))}×` : ''}
+                                {s.reps ?? '—'}
+                              </span>
+                            ))}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {m.plannedNow?.isDropSet && (
+                  <p class="rounded-slab border border-sodium/40 bg-sodium/10 px-4 py-3 text-sm text-sodium">
+                    Drop-set: sin descanso,{' '}
+                    {m.plannedNow.dropPct !== null
+                      ? `baja ${m.plannedNow.dropPct}% el peso`
+                      : 'baja el peso'}{' '}
+                    y saca {repsLabel(m.plannedNow)}.
+                  </p>
+                )}
+
+                {/* ─────────────────────────────────────────────────────────
+                    CAMPOS DE ESTA SERIE · el centro visual de la pantalla.
+
+                    ORDEN OBLIGATORIO. La action recibe arrays paralelos y
+                    los cuadra por índice según el orden del documento: la
+                    enésima aparición de cada `name` tiene que ser del
+                    enésimo ejercicio del bloque. Van siempre los seis; los
+                    que el tipo de ejercicio no usa viajan como hidden
+                    vacíos solo para no romper la alineación.
+
+                    No quitar ninguno. No reordenarlos. No usar `disabled`
+                    (un control deshabilitado no se envía y el array se
+                    acorta). Agrupar en divs sí se puede: FormData recorre
+                    el árbol, no los hermanos.
+
+                      1. sessionExerciseId  (arriba de la sección)
+                      2. weight          ← f-weight-{i} / data-for
+                      3. reps            ← f-reps-{i}   / data-for
+                      4. durationSeconds
+                      5. distanceMeters
+                      6. rpe
+                   ───────────────────────────────────────────────────────── */}
+                <div class="grid gap-3.5">
+                  {/* ── 2/6 · PESO ── */}
+                  {m.usesWeight ? (
+                    <div>
+                      <div class="mb-2 flex items-baseline justify-between gap-2">
+                        <label class="stencil" for={`f-weight-${i}`}>Peso</label>
+                        <span class="stencil text-ash-dim">kg</span>
+                      </div>
+                      <div class="stepper">
+                        <button
+                          type="button"
+                          class="btn h-14 w-14 shrink-0 px-0 text-xl"
+                          data-step="-2.5"
+                          data-for={`f-weight-${i}`}
+                          aria-label={`Bajar 2.5 kg en ${m.se.exercise.name}`}
+                        >
+                          −
+                        </button>
+                        <input
+                          id={`f-weight-${i}`}
+                          type="number"
+                          name="weight"
+                          form={ROUND_FORM}
+                          class="readout field h-14 min-w-0 flex-1 text-center text-3xl sm:text-4xl"
+                          step="0.5"
+                          min="0"
+                          inputmode="decimal"
+                          value={m.prefillWeight ?? ''}
+                        />
+                        <button
+                          type="button"
+                          class="btn h-14 w-14 shrink-0 px-0 text-xl"
+                          data-step="2.5"
+                          data-for={`f-weight-${i}`}
+                          aria-label={`Subir 2.5 kg en ${m.se.exercise.name}`}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <input type="hidden" name="weight" value="" form={ROUND_FORM} />
+                  )}
+
+                  {/* ── 3/6 · REPS ── */}
+                  {m.usesReps ? (
+                    <div>
+                      <div class="mb-2 flex items-baseline justify-between gap-2">
+                        <label class="stencil" for={`f-reps-${i}`}>Reps</label>
+                        {m.plannedNow && (
+                          <span class="stencil text-sodium">
+                            objetivo {repsLabel(m.plannedNow)}
+                          </span>
+                        )}
+                      </div>
+                      <div class="stepper">
+                        <button
+                          type="button"
+                          class="btn h-14 w-14 shrink-0 px-0 text-xl"
+                          data-step="-1"
+                          data-for={`f-reps-${i}`}
+                          aria-label={`Una repetición menos en ${m.se.exercise.name}`}
+                        >
+                          −
+                        </button>
+                        <input
+                          id={`f-reps-${i}`}
+                          type="number"
+                          name="reps"
+                          form={ROUND_FORM}
+                          class="readout field h-14 min-w-0 flex-1 text-center text-3xl sm:text-4xl"
+                          min="0"
+                          inputmode="numeric"
+                          value={m.prefillReps ?? ''}
+                          placeholder={m.plannedNow?.toFailure ? 'F' : undefined}
+                        />
+                        <button
+                          type="button"
+                          class="btn h-14 w-14 shrink-0 px-0 text-xl"
+                          data-step="1"
+                          data-for={`f-reps-${i}`}
+                          aria-label={`Una repetición más en ${m.se.exercise.name}`}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <input type="hidden" name="reps" value="" form={ROUND_FORM} />
+                  )}
+
+                  {/* ── 4/6 · SEGUNDOS · 5/6 · METROS · 6/6 · RPE ── */}
+                  <div class="flex flex-wrap items-end gap-3">
+                    {m.usesTime ? (
+                      <div class="min-w-28 flex-1">
+                        <label class="stencil mb-2 block" for={`f-duration-${i}`}>
+                          Segundos
+                        </label>
+                        <input
+                          id={`f-duration-${i}`}
+                          type="number"
+                          name="durationSeconds"
+                          form={ROUND_FORM}
+                          class="readout field h-14 text-center text-2xl"
+                          min="0"
+                          inputmode="numeric"
+                        />
+                      </div>
+                    ) : (
+                      <input
+                        type="hidden"
+                        name="durationSeconds"
+                        value=""
+                        form={ROUND_FORM}
+                      />
+                    )}
+
+                    {m.usesDistance ? (
+                      <div class="min-w-28 flex-1">
+                        <label class="stencil mb-2 block" for={`f-distance-${i}`}>
+                          Metros
+                        </label>
+                        <input
+                          id={`f-distance-${i}`}
+                          type="number"
+                          name="distanceMeters"
+                          form={ROUND_FORM}
+                          class="readout field h-14 text-center text-2xl"
+                          min="0"
+                          step="10"
+                          inputmode="decimal"
+                        />
+                      </div>
+                    ) : (
+                      <input
+                        type="hidden"
+                        name="distanceMeters"
+                        value=""
+                        form={ROUND_FORM}
+                      />
+                    )}
+
+                    {/* RPE = esfuerzo percibido. Se mide en reps en reserva:
+                        10 es al fallo, 8 es "me quedaban 2". Es opcional, por
+                        eso arranca vacío. La explicación va en el title y en
+                        la leyenda de abajo: nadie nace sabiendo qué es. */}
+                    <div class="w-24">
+                      <label
+                        class="stencil mb-2 block cursor-help decoration-steel-hi decoration-dotted underline-offset-4 hover:underline"
+                        for={`f-rpe-${i}`}
+                        title="Esfuerzo percibido del 1 al 10: cuántas reps te quedaban. 10 = al fallo, 9 = te quedaba 1, 8 = te quedaban 2. Opcional."
+                      >
+                        RPE
+                      </label>
+                      <input
+                        id={`f-rpe-${i}`}
+                        type="number"
+                        name="rpe"
+                        form={ROUND_FORM}
+                        class="readout field h-14 text-center text-xl text-ash"
+                        min="1"
+                        max="10"
+                        step="0.5"
+                        inputmode="decimal"
+                        placeholder="—"
+                        title="Esfuerzo percibido del 1 al 10: cuántas reps te quedaban. 10 = al fallo, 9 = te quedaba 1, 8 = te quedaban 2. Opcional."
+                      />
+                    </div>
+                  </div>
+
+                  <p class="text-xs leading-relaxed text-ash-dim">
+                    <span class="stencil text-ash-dim">RPE</span>{' '}
+                    qué tan dura se sintió, del 1 al 10:{' '}
+                    <span class="readout text-ash">10</span> es al fallo,{' '}
+                    <span class="readout text-ash">8</span> es «me quedaban 2».
+                    Opcional.
+                  </p>
+                </div>
+
+                {m.target?.notes && (
+                  <p class="border-l-2 border-steel-hi pl-3 text-sm leading-relaxed text-ash">
+                    {m.target.notes}
+                  </p>
+                )}
+
+                {/* Series registradas. El <ul data-sets> va SIN clases: el
+                    script crea uno igual de pelado cuando esta es la
+                    primera serie, y las dos listas tienen que verse igual. */}
+                <div>
+                  <p class="stencil mb-2 text-ash-dim">Hechas hoy</p>
+                  <div class="slab bg-panel/60 px-4">
+                    {m.se.sets.length > 0 ? (
+                      <ul data-sets>
+                        {m.se.sets.map((set) => (
+                          <SetRow
+                            {...set}
+                            kind={m.se.exercise.kind}
+                            action={keepingBlock(actions.deleteSet.queryString)}
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p class="py-7 text-center text-sm text-ash-dim" data-sets-empty>
+                        Sin series todavía.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </section>
+            ))}
+          </div>
+
+          {/* Avanzar de bloque. Va ANTES de la barra pegada: si fuera
+              después, la barra lo taparía para siempre. */}
+          <div class="mt-7 flex items-center justify-between gap-2 border-t border-steel pt-5">
+            <a
+              href={previousTab ? `?e=${previousTab.at}` : '#'}
+              class:list={[
+                'btn btn-ghost btn-sm min-w-0',
+                !previousTab && 'pointer-events-none opacity-25',
+              ]}
+              aria-disabled={!previousTab}
+            >
+              <span aria-hidden="true">←</span>
+              <span class="max-w-32 truncate">
+                {previousTab ? previousTab.names[0] : 'Anterior'}
+              </span>
+            </a>
+            <a
+              href={nextTab ? `?e=${nextTab.at}` : '#'}
+              class:list={[
+                'btn btn-ghost btn-sm min-w-0',
+                !nextTab && 'pointer-events-none opacity-25',
+              ]}
+              aria-disabled={!nextTab}
+            >
+              <span class="max-w-32 truncate">
+                {nextTab ? nextTab.names[0] : 'Siguiente'}
+              </span>
+              <span aria-hidden="true">→</span>
+            </a>
+          </div>
+
+          {/*
+            Cierre de la ronda: un solo botón para todo el bloque, pegado al
+            fondo para que caiga bajo el pulgar. `sticky` y no `fixed` para
+            que se vaya al llegar a "Terminar" y no compita con él.
+
+            El cronómetro y el aviso tienen que seguir DENTRO de este form:
+            session.ts los busca con `form.querySelector`.
+          */}
           <form
+            id={ROUND_FORM}
             method="POST"
-            action={actions.logSet}
-            class="slab p-4"
+            action={keepingBlock(actions.logRound.queryString)}
+            class="sticky bottom-0 z-40 -mx-4 mt-6 border-t border-steel bg-void/90 px-4 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] backdrop-blur-xl"
             data-log-form
             data-rest={restSeconds}
           >
-            <input type="hidden" name="sessionExerciseId" value={current.id} />
+            {/*
+              El contador cambia cada segundo; anunciarlo sería ruido para un
+              lector de pantalla, que recibe solo inicio y fin desde la
+              región de abajo. `hidden` es obligatorio: session.ts lo quita
+              para mostrarlo. Y ojo, el script escribe este nodo con
+              `textContent`, así que no puede llevar hijos: todo el estilo
+              va en el propio <p>.
+            */}
+            <p
+              class="readout hidden mb-3 rounded-slab border border-sodium/40 bg-sodium/10 py-3.5 text-center text-3xl text-sodium"
+              data-rest-timer
+              aria-hidden="true"
+            >
+            </p>
+            <p class="sr-only" data-rest-announce role="status" aria-live="polite"></p>
 
-            <div class="flex flex-wrap items-end gap-3">
-              {usesWeight && (
-                <div class="min-w-32 flex-1">
-                  <label class="stencil mb-1.5 block" for="f-weight">Peso kg</label>
-                  <div class="flex items-stretch gap-1">
-                    <button
-                      type="button"
-                      class="btn btn-sm w-10 px-0"
-                      data-step="-2.5"
-                      data-for="f-weight"
-                      aria-label="Bajar 2.5 kg"
-                    >
-                      −
-                    </button>
-                    <input
-                      id="f-weight"
-                      type="number"
-                      name="weight"
-                      class="field min-w-0 flex-1 text-center text-lg"
-                      step="0.5"
-                      min="0"
-                      inputmode="decimal"
-                      value={prefillWeight ?? ''}
-                    />
-                    <button
-                      type="button"
-                      class="btn btn-sm w-10 px-0"
-                      data-step="2.5"
-                      data-for="f-weight"
-                      aria-label="Subir 2.5 kg"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {usesReps && (
-                <div class="min-w-32 flex-1">
-                  <label class="stencil mb-1.5 block" for="f-reps">
-                    Reps
-                    {plannedNow && (
-                      <span class="ml-1 text-sodium">
-                        objetivo {repsLabel(plannedNow)}
-                      </span>
-                    )}
-                  </label>
-                  <div class="flex items-stretch gap-1">
-                    <button
-                      type="button"
-                      class="btn btn-sm w-10 px-0"
-                      data-step="-1"
-                      data-for="f-reps"
-                      aria-label="Una repetición menos"
-                    >
-                      −
-                    </button>
-                    <input
-                      id="f-reps"
-                      type="number"
-                      name="reps"
-                      class="field min-w-0 flex-1 text-center text-lg"
-                      min="0"
-                      inputmode="numeric"
-                      value={prefillReps ?? ''}
-                      placeholder={plannedNow?.toFailure ? 'al fallo' : undefined}
-                    />
-                    <button
-                      type="button"
-                      class="btn btn-sm w-10 px-0"
-                      data-step="1"
-                      data-for="f-reps"
-                      aria-label="Una repetición más"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {usesTime && (
-                <div class="min-w-28 flex-1">
-                  <label class="stencil mb-1.5 block" for="f-duration">
-                    Segundos
-                  </label>
-                  <input
-                    id="f-duration"
-                    type="number"
-                    name="durationSeconds"
-                    class="field text-center text-lg"
-                    min="0"
-                    inputmode="numeric"
-                  />
-                </div>
-              )}
-
-              {usesDistance && (
-                <div class="min-w-28 flex-1">
-                  <label class="stencil mb-1.5 block" for="f-distance">Metros</label>
-                  <input
-                    id="f-distance"
-                    type="number"
-                    name="distanceMeters"
-                    class="field text-center text-lg"
-                    min="0"
-                    step="10"
-                    inputmode="decimal"
-                  />
-                </div>
-              )}
-
-              <div class="w-20">
-                <label class="stencil mb-1.5 block" for="f-rpe">RPE</label>
-                <input
-                  id="f-rpe"
-                  type="number"
-                  name="rpe"
-                  class="field text-center"
-                  min="1"
-                  max="10"
-                  step="0.5"
-                  inputmode="decimal"
-                  placeholder="—"
-                />
-              </div>
-            </div>
-
-            <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <label class="flex cursor-pointer items-center gap-2">
+            <div class="flex items-center gap-3">
+              <label class="flex min-h-12 shrink-0 cursor-pointer items-center gap-2 px-1">
                 <input
                   type="checkbox"
                   name="isWarmup"
                   value="true"
                   class="size-4 accent-[var(--color-sodium)]"
                 />
-                <span class="stencil">Calentamiento</span>
+                <span class="stencil">{isSuperset ? 'Ronda calent.' : 'Calent.'}</span>
               </label>
 
-              <button type="submit" class="btn btn-primary flex-1 text-base sm:flex-none">
-                Registrar serie
+              <button type="submit" class="btn btn-primary min-h-14 flex-1">
+                {isSuperset ? `Registrar ronda · ${members.length}` : 'Registrar serie'}
               </button>
             </div>
 
-            {/* El contador visible cambia cada segundo; anunciarlo así sería
-                ruido para un lector de pantalla, que recibe solo el aviso
-                de inicio y de fin desde la región de abajo. */}
-            <p class="stencil mt-3 hidden text-center text-sodium" data-rest-timer aria-hidden="true"></p>
-            <p class="sr-only" data-rest-announce role="status" aria-live="polite"></p>
-
             {skipRest && (
-              <p class="stencil mt-3 text-center text-ash-dim">
-                {plannedNext?.isDropSet
-                  ? 'Sin descanso: baja el peso y encadena el drop-set.'
-                  : 'Sin descanso: sigue con el ejercicio encadenado.'}
+              <p class="stencil mt-2.5 text-center text-ash-dim">
+                Sin descanso: baja el peso y encadena el drop-set.
               </p>
             )}
           </form>
-
-          {/* Avanzar */}
-          <div class="mt-4 flex justify-between gap-2">
-            <a
-              href={`?e=${index - 1}`}
-              class:list={['btn btn-ghost', index === 0 && 'pointer-events-none opacity-30']}
-              aria-disabled={index === 0}
-            >
-              ← Anterior
-            </a>
-            <a
-              href={`?e=${index + 1}`}
-              class:list={[
-                'btn btn-ghost',
-                index >= session.exercises.length - 1 && 'pointer-events-none opacity-30',
-              ]}
-              aria-disabled={index >= session.exercises.length - 1}
-            >
-              Siguiente →
-            </a>
-          </div>
         </article>
       ) : (
-        <p class="slab px-5 py-8 text-center text-ash">
+        <p class="slab px-5 py-12 text-center text-ash">
           Esta sesión no tiene ejercicios. Agrega uno abajo.
         </p>
       )
     }
 
     <!-- ===== Agregar ejercicio sobre la marcha ===== -->
-    <details class="slab mt-6 p-4">
-      <summary class="stencil cursor-pointer select-none hover:text-chalk">
+    <details class="slab mt-8 p-4 sm:p-5">
+      <summary
+        class="stencil group flex cursor-pointer list-none items-center gap-1.5 transition-colors hover:text-chalk"
+      >
+        <span class="transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
         Agregar otro ejercicio
       </summary>
       <div class="mt-4">
@@ -600,9 +963,9 @@ const targetLabel = target ? summarizeScheme(plan) : null
     </details>
 
     <!-- ===== Terminar ===== -->
-    <section id="terminar" class="slab mt-6 p-5">
-      <h2 class="text-lg">Terminar entrenamiento</h2>
-      <p class="mt-1 text-sm text-ash">
+    <section id="terminar" class="slab mt-6 scroll-mt-24 p-5 sm:p-6">
+      <h2 class="text-2xl">Terminar entrenamiento</h2>
+      <p class="mt-1.5 text-sm text-ash">
         {
           totalSets > 0
             ? `${totalSets} series registradas.`
@@ -610,14 +973,12 @@ const targetLabel = target ? summarizeScheme(plan) : null
         }
       </p>
 
-      <form method="POST" action={actions.finishSession} class="mt-4 grid gap-4">
+      <form method="POST" action={actions.finishSession} class="mt-5 grid gap-4">
         <input type="hidden" name="id" value={session.id} />
 
         <div class="grid gap-4 sm:grid-cols-[10rem_1fr]">
           <div>
-            <label class="stencil mb-1.5 block" for="bodyweight">
-              Peso corporal
-            </label>
+            <label class="stencil mb-2 block" for="bodyweight">Peso corporal</label>
             <input
               id="bodyweight"
               type="number"
@@ -630,7 +991,7 @@ const targetLabel = target ? summarizeScheme(plan) : null
             />
           </div>
           <div>
-            <label class="stencil mb-1.5 block" for="notes">Notas</label>
+            <label class="stencil mb-2 block" for="notes">Notas</label>
             <input
               id="notes"
               name="notes"
@@ -641,13 +1002,17 @@ const targetLabel = target ? summarizeScheme(plan) : null
         </div>
 
         <div>
-          <button type="submit" class="btn btn-primary w-full text-base sm:w-auto">
+          <button type="submit" class="btn btn-primary w-full sm:w-auto">
             Guardar y terminar
           </button>
         </div>
       </form>
 
-      <form method="POST" action={actions.cancelSession} class="mt-5 border-t border-steel pt-4">
+      <form
+        method="POST"
+        action={actions.cancelSession}
+        class="mt-6 border-t border-steel pt-5"
+      >
         <input type="hidden" name="id" value={session.id} />
         <button type="submit" class="btn btn-sm btn-ghost btn-danger">
           Descartar sesión

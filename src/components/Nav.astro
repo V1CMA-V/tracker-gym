@@ -25,33 +25,38 @@ const isActive = (href: string) =>
   href === '/' ? path === '/' : path.startsWith(href);
 ---
 
-<header class="sticky top-0 z-50 border-b border-steel bg-void/92 backdrop-blur-sm">
-  <div class="mx-auto flex max-w-5xl items-center gap-3 px-4 py-3 sm:gap-6">
+<!--
+  El alto de esta barra es `--nav-h` (global.css). `historial.astro` pega
+  sus cabeceras de mes justo debajo con `top-[var(--nav-h)]`, así que si
+  cambia el padding de aquí hay que mover esa variable, no el otro archivo.
+-->
+<header
+  class="sticky top-0 z-50 h-[var(--nav-h)] border-b border-steel bg-void/80 backdrop-blur-xl"
+>
+  <div class="mx-auto flex h-full max-w-5xl items-center gap-2 px-4 sm:gap-4">
     <a href="/" class="group flex shrink-0 items-center gap-2.5" aria-label="Inicio">
       <!-- Vista frontal de un disco olímpico -->
-      <svg viewBox="0 0 24 24" class="size-6 shrink-0" aria-hidden="true">
-        <circle cx="12" cy="12" r="11" fill="none" stroke="var(--color-sodium)" stroke-width="2" />
-        <circle cx="12" cy="12" r="3.5" fill="var(--color-sodium)" />
+      <svg viewBox="0 0 24 24" class="size-5 shrink-0" aria-hidden="true">
+        <circle cx="12" cy="12" r="11" fill="none" stroke="var(--color-sodium)" stroke-width="2"
+        ></circle>
+        <circle cx="12" cy="12" r="3.5" fill="var(--color-sodium)"></circle>
       </svg>
-      <span
-        class="hidden font-display text-[0.9375rem] font-extrabold tracking-[-0.02em] uppercase sm:block"
-        style="font-variation-settings: 'wdth' 118"
-      >
+      <span class="hidden font-display text-lg leading-none tracking-[-0.015em] sm:block">
         Tracker<span class="text-sodium">Gym</span>
       </span>
     </a>
 
-    <nav class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto sm:gap-1">
+    <nav class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
       {
         links.map((link) => (
           <a
             href={link.href}
             aria-current={isActive(link.href) ? 'page' : undefined}
             class:list={[
-              'stencil shrink-0 border-b-2 px-2 py-2 transition-colors sm:px-3',
+              'shrink-0 rounded-full px-3 py-1.5 text-[0.8125rem] font-medium transition-colors',
               isActive(link.href)
-                ? 'border-sodium text-chalk'
-                : 'border-transparent hover:text-chalk',
+                ? 'bg-sodium/12 text-sodium'
+                : 'text-ash hover:bg-panel-hi hover:text-chalk',
             ]}
           >
             {link.label}
@@ -67,14 +72,18 @@ const isActive = (href: string) =>
           class="btn btn-sm btn-primary shrink-0"
           title={openSession.routineName ?? 'Entreno libre'}
         >
-          <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-void" />
+          <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-[#1a1204]" />
           En curso
         </a>
       )
     }
 
     <SignOutButton asChild redirectUrl="/login">
-      <button type="button" class="btn btn-sm btn-ghost shrink-0" title={user.displayName}>
+      <button
+        type="button"
+        class="shrink-0 rounded-full px-3 py-1.5 text-[0.8125rem] font-medium text-ash transition-colors hover:bg-panel-hi hover:text-chalk"
+        title={user.displayName}
+      >
         Salir
       </button>
     </SignOutButton>

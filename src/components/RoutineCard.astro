@@ -22,50 +22,58 @@ const {
   delay = 0,
 }: Props = Astro.props
 
-const accent = color ?? '#FFB000'
+const accent = color ?? '#E8A33D'
 ---
 
 <a
   href={`/rutinas/${id}`}
-  class="slab slab-lift rise group relative flex flex-col overflow-hidden p-4 pl-5"
+  class="slab slab-lift rise group relative flex flex-col overflow-hidden p-5 pl-6"
   style={`animation-delay:${delay * 70}ms`}
 >
-  <!-- Canto de color: identifica la rutina de un vistazo en el calendario -->
+  {/* Lavado + canto del color de la rutina: la identifica de un vistazo. */}
+  <div
+    class="absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-[0.07]"
+    style={`background:radial-gradient(80% 120% at 0% 0%, ${accent}, transparent 60%)`}
+    aria-hidden="true"
+  >
+  </div>
   <span
-    class="absolute inset-y-0 left-0 w-1.5"
-    style={`background:${accent}`}
+    class="absolute inset-y-0 left-0 w-[3px]"
+    style={`background:linear-gradient(to bottom, ${accent}, transparent 90%)`}
     aria-hidden="true"></span>
 
-  <div class="flex items-start justify-between gap-3">
-    <h3 class="text-xl leading-tight group-hover:text-sodium">{name}</h3>
-    <span class="readout shrink-0 text-2xl text-steel-hi group-hover:text-ash">
-      {String(exerciseCount).padStart(2, '0')}
-    </span>
-  </div>
+  <div class="relative flex flex-1 flex-col">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="text-2xl leading-tight transition-colors group-hover:text-sodium">
+        {name}
+      </h3>
+      <span
+        class="readout shrink-0 text-2xl text-steel-hi transition-colors group-hover:text-ash"
+      >
+        {String(exerciseCount).padStart(2, '0')}
+      </span>
+    </div>
 
-  {
-    description && (
-      <p class="mt-1.5 line-clamp-2 text-sm text-ash">{description}</p>
-    )
-  }
-
-  {
-    days.length > 0 && (
-      <p class="stencil mt-2 text-sodium">{days.join(' · ')}</p>
-    )
-  }
-
-  <div class="mt-auto flex flex-wrap items-center gap-1.5 pt-4">
     {
-      muscles.length > 0 ? (
-        muscles.map((m) => (
-          <span class="stencil border border-steel px-1.5 py-0.5 text-ash-dim">
-            {m}
-          </span>
-        ))
-      ) : (
-        <span class="stencil text-ash-dim">Sin ejercicios</span>
+      description && (
+        <p class="mt-2 line-clamp-2 text-sm leading-relaxed text-ash">{description}</p>
       )
     }
+
+    {days.length > 0 && <p class="stencil mt-2.5 text-sodium">{days.join(' · ')}</p>}
+
+    <div class="mt-auto flex flex-wrap items-center gap-1.5 pt-5">
+      {
+        muscles.length > 0 ? (
+          muscles.map((m) => (
+            <span class="stencil rounded-full border border-steel px-2 py-0.5 text-ash-dim">
+              {m}
+            </span>
+          ))
+        ) : (
+          <span class="stencil text-ash-dim">Sin ejercicios</span>
+        )
+      }
+    </div>
   </div>
 </a>

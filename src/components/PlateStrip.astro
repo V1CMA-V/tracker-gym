@@ -21,11 +21,11 @@ const height = (plateKg: number) => 10 + Math.min(plateKg, 25) * 0.86
       title={`Barra de ${BAR_KG} kg + ${load.perSide.map((p) => trim(p.kg)).join(' + ')} por lado`}
     >
       {/* Manguito de la barra */}
-      <span class="h-[7px] w-3 shrink-0 rounded-[1px] bg-ash-dim" aria-hidden="true" />
+      <span class="h-[7px] w-3 shrink-0 rounded-[2px] bg-ash-dim" aria-hidden="true" />
 
       {load.perSide.map((plate) => (
         <span
-          class="w-[7px] shrink-0 rounded-[1px]"
+          class="w-[7px] shrink-0 rounded-[2px]"
           style={`height:${height(plate.kg)}px;background:${plate.color}`}
           aria-hidden="true"
         />

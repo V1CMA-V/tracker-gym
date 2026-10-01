@@ -100,18 +100,18 @@ const stats = [
 ---
 
 <Layout>
-  <header class="mb-8">
+  <header class="mb-9">
     <p class="stencil">
       {greeting} · {date(now, user.timezone, { weekday: 'long' })}
     </p>
-    <h1 class="mt-1.5 text-4xl sm:text-5xl">{user.displayName}</h1>
+    <h1 class="mt-2 text-5xl sm:text-6xl">{user.displayName}</h1>
   </header>
 
   {
     error && (
       <p
         role="alert"
-        class="mb-6 border-l-2 border-signal bg-signal/10 px-3 py-2 text-sm text-signal"
+        class="mb-6 rounded-slab border border-signal/40 bg-signal/10 px-4 py-3 text-sm text-signal"
       >
         {error}
       </p>
@@ -121,66 +121,84 @@ const stats = [
   <!-- ===== Lo de hoy ===== -->
   {
     openSession ? (
-      <section class="slab rise relative overflow-hidden border-sodium p-5">
-        <div class="hazard absolute inset-x-0 top-0 h-1" aria-hidden="true" />
-        <p class="stencil text-sodium">Entrenamiento en curso</p>
-        <h2 class="mt-2 text-3xl">{openSession.routineName ?? 'Entreno libre'}</h2>
-        <p class="mt-1.5 text-sm text-ash">
-          Empezó a las{' '}
-          {date(openSession.startedAt, user.timezone, {
-            hour: '2-digit',
-            minute: '2-digit',
-            day: undefined,
-            month: undefined,
-          })}
-        </p>
-        <a href={`/sesion/${openSession.id}`} class="btn btn-primary mt-5 w-full sm:w-auto">
-          Continuar
-        </a>
-      </section>
-    ) : suggested ? (
-      <section
-        class="slab rise relative overflow-hidden p-5 pl-6"
-        style={`border-color:${suggested.color ?? '#FFB000'}`}
-      >
-        <span
-          class="absolute inset-y-0 left-0 w-1.5"
-          style={`background:${suggested.color ?? '#FFB000'}`}
+      <section class="slab rise relative overflow-hidden border-sodium/50 p-6 sm:p-7">
+        <div
+          class="absolute inset-0 opacity-[0.07]"
+          style="background:radial-gradient(90% 130% at 0% 0%, var(--color-sodium), transparent 62%)"
           aria-hidden="true"
         />
-        <p class="stencil">Hoy toca</p>
-        <h2 class="mt-2 text-3xl sm:text-4xl">{suggested.name}</h2>
-        {suggested.description && (
-          <p class="mt-1.5 text-sm text-ash">{suggested.description}</p>
-        )}
-        <p class="stencil mt-3">
-          <span class="readout mr-1 text-base text-chalk">
-            {suggested._count.exercises}
-          </span>
-          ejercicios
-        </p>
+        <div class="relative">
+          <p class="stencil flex items-center gap-2 text-sodium">
+            <span class="size-1.5 animate-pulse rounded-full bg-sodium" aria-hidden="true" />
+            Entrenamiento en curso
+          </p>
+          <h2 class="mt-3 text-4xl sm:text-5xl">
+            {openSession.routineName ?? 'Entreno libre'}
+          </h2>
+          <p class="mt-2 text-sm text-ash">
+            Empezó a las{' '}
+            {date(openSession.startedAt, user.timezone, {
+              hour: '2-digit',
+              minute: '2-digit',
+              day: undefined,
+              month: undefined,
+            })}
+          </p>
+          <a href={`/sesion/${openSession.id}`} class="btn btn-primary mt-6 w-full sm:w-auto">
+            Continuar entrenando
+          </a>
+        </div>
+      </section>
+    ) : suggested ? (
+      <section class="slab rise relative overflow-hidden p-6 pl-7 sm:p-7 sm:pl-8">
+        {/* Lavado de color de la rutina: identifica el día sin un borde duro. */}
+        <div
+          class="absolute inset-0 opacity-[0.11]"
+          style={`background:radial-gradient(90% 130% at 0% 0%, ${suggested.color ?? '#E8A33D'}, transparent 62%)`}
+          aria-hidden="true"
+        />
+        <span
+          class="absolute inset-y-0 left-0 w-[3px]"
+          style={`background:linear-gradient(to bottom, ${suggested.color ?? '#E8A33D'}, transparent 85%)`}
+          aria-hidden="true"
+        />
+        <div class="relative">
+          <p class="stencil">Hoy toca</p>
+          <h2 class="mt-2.5 text-4xl sm:text-5xl">{suggested.name}</h2>
+          {suggested.description && (
+            <p class="mt-2.5 max-w-prose text-sm leading-relaxed text-ash">
+              {suggested.description}
+            </p>
+          )}
+          <p class="stencil mt-4">
+            <span class="readout mr-1.5 text-base text-chalk">
+              {suggested._count.exercises}
+            </span>
+            ejercicios
+          </p>
 
-        <form method="POST" action={actions.startSession} class="mt-5 flex flex-wrap gap-2">
-          <input type="hidden" name="routineId" value={suggested.id} />
-          <button type="submit" class="btn btn-primary flex-1 text-base sm:flex-none">
-            Empezar
-          </button>
-          <a href={`/rutinas/${suggested.id}`} class="btn btn-ghost">Ver rutina</a>
-        </form>
+          <form method="POST" action={actions.startSession} class="mt-6 flex flex-wrap gap-2.5">
+            <input type="hidden" name="routineId" value={suggested.id} />
+            <button type="submit" class="btn btn-primary flex-1 sm:flex-none">
+              Empezar
+            </button>
+            <a href={`/rutinas/${suggested.id}`} class="btn btn-ghost">Ver rutina</a>
+          </form>
+        </div>
       </section>
     ) : routineCount > 0 ? (
-      <section class="slab rise p-5">
+      <section class="slab rise p-6 sm:p-7">
         <p class="stencil">Sin plan para hoy</p>
-        <h2 class="mt-2 text-2xl">Elige una rutina o entrena libre</h2>
-        <div class="mt-5 flex flex-wrap gap-2">
+        <h2 class="mt-2.5 text-3xl sm:text-4xl">Elige una rutina o entrena libre</h2>
+        <div class="mt-6 flex flex-wrap gap-2.5">
           <a href="/rutinas" class="btn btn-primary">Ver rutinas</a>
           <form method="POST" action={actions.startSession}>
             <button type="submit" class="btn btn-ghost">Entreno libre</button>
           </form>
         </div>
-        <p class="stencil mt-4 text-ash-dim">
+        <p class="mt-5 border-t border-steel pt-4 text-sm text-ash-dim">
           ¿Siempre entrenas lo mismo este día?{' '}
-          <a href="/rutinas" class="text-sodium underline hover:text-chalk">
+          <a href="/rutinas" class="text-sodium underline decoration-sodium/40 underline-offset-2 hover:decoration-sodium">
             Planea tu semana
           </a>{' '}
           y aparecerá aquí solo.
@@ -197,11 +215,16 @@ const stats = [
   }
 
   <!-- ===== Este mes ===== -->
-  <section class="mt-10">
+  <section class="mt-12">
     <h2 class="stencil mb-3">
       {date(now, user.timezone, { month: 'long', day: undefined })} en números
     </h2>
-    <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    {/*
+      Una sola superficie con separadores de 1px: el `gap-px` deja ver el
+      fondo acero y hace las líneas, así que funciona igual con 2 o con 4
+      columnas sin pelearse con `divide-*`.
+    */}
+    <div class="slab grid grid-cols-2 gap-px overflow-hidden bg-steel sm:grid-cols-4">
       {stats.map((stat, i) => <StatTile {...stat} delay={i} />)}
     </div>
   </section>
@@ -209,25 +232,25 @@ const stats = [
   <!-- ===== Últimas sesiones ===== -->
   {
     recent.length > 0 && (
-      <section class="mt-10">
-        <div class="mb-3 flex items-baseline justify-between">
+      <section class="mt-12">
+        <div class="mb-3 flex items-baseline justify-between gap-3">
           <h2 class="stencil">Últimos entrenamientos</h2>
-          <a href="/historial" class="stencil hover:text-chalk">
+          <a href="/historial" class="stencil transition-colors hover:text-chalk">
             Ver todo →
           </a>
         </div>
 
-        <ul class="grid gap-2">
+        <ul class="slab divide-y divide-steel overflow-hidden">
           {recent.map((entry, i) => (
             <li
-              class="slab rise flex items-center gap-4 px-4 py-3"
+              class="rise flex min-w-0 items-center gap-4 px-4 py-4"
               style={`animation-delay:${i * 60}ms`}
             >
               <div class="min-w-0 flex-1">
-                <p class="truncate text-base">
+                <p class="truncate font-display text-xl leading-tight">
                   {entry.routineName ?? 'Entreno libre'}
                 </p>
-                <p class="stencil mt-0.5">
+                <p class="stencil mt-1.5 text-ash-dim">
                   {date(entry.startedAt, user.timezone, { weekday: 'short' })} ·{' '}
                   {entry._count.exercises} ejercicios
                 </p>
