@@ -2,31 +2,28 @@
 import { actions } from 'astro:actions'
 
 import Layout from '../../layouts/Layout.astro'
+import ExerciseFields from '../../components/ExerciseFields.astro'
 import { prisma } from '../../lib/prisma'
 import { getCurrentUser } from '../../lib/session'
-import { backTo } from '../../lib/format'
+import { backTo, EXERCISE_KINDS } from '../../lib/format'
 
 const user = await getCurrentUser(Astro.locals)
 
-const created = Astro.getActionResult(actions.createExercise)
-const archivedResult = Astro.getActionResult(actions.archiveExercise)
-
 // POST-redirect-GET conservando el filtro activo.
-if ((created && !created.error) || (archivedResult && !archivedResult.error)) {
+const mutations = [
+  Astro.getActionResult(actions.createExercise),
+  Astro.getActionResult(actions.updateExercise),
+  Astro.getActionResult(actions.archiveExercise),
+]
+const failed = mutations.find((r) => r?.error)
+if (mutations.some((r) => r && !r.error)) {
   return Astro.redirect(backTo(Astro.url), 303)
 }
-const error = created?.error?.message ?? archivedResult?.error?.message
+const error = failed?.error?.message
 
 // Filtros por querystring: enlaces normales, funcionan sin JavaScript.
 const muscleFilter = Astro.url.searchParams.get('musculo')
 const kindFilter = Astro.url.searchParams.get('tipo')
-
-const KINDS = {
-  weight_reps: 'Peso + reps',
-  bodyweight: 'Peso corporal',
-  duration: 'Tiempo',
-  distance: 'Distancia',
-} as const
 
 const muscleGroups = await prisma.muscleGroup.findMany({ orderBy: { name: 'asc' } })
 
@@ -34,8 +31,8 @@ const exercises = await prisma.exercise.findMany({
   where: {
     isArchived: false,
     OR: [{ userId: null }, { userId: user.id }],
-    ...(kindFilter && kindFilter in KINDS
-      ? { kind: kindFilter as keyof typeof KINDS }
+    ...(kindFilter && kindFilter in EXERCISE_KINDS
+      ? { kind: kindFilter as keyof typeof EXERCISE_KINDS }
       : {}),
     ...(muscleFilter
       ? { muscles: { some: { muscleGroup: { name: muscleFilter } } } }
@@ -50,7 +47,11 @@ const exercises = await prisma.exercise.findMany({
     description: true,
     userId: true,
     muscles: {
-      select: { isPrimary: true, muscleGroup: { select: { name: true } } },
+      select: {
+        isPrimary: true,
+        muscleGroupId: true,
+        muscleGroup: { select: { name: true } },
+      },
       orderBy: { isPrimary: 'desc' },
     },
     _count: { select: { sessionEntries: true } },
@@ -125,7 +126,7 @@ const mine = exercises.filter((e) => e.userId !== null).length
         Todos
       </a>
       {
-        Object.entries(KINDS).map(([value, label]) => (
+        Object.entries(EXERCISE_KINDS).map(([value, label]) => (
           <a
             href={linkWith('tipo', value)}
             class:list={[
@@ -157,52 +158,101 @@ const mine = exercises.filter((e) => e.userId !== null).length
   {
     exercises.length > 0 ? (
       <ul class="grid gap-2 sm:grid-cols-2">
-        {exercises.map((exercise, i) => (
-          <li
-            class="slab rise flex items-start gap-3 p-3.5"
-            style={`animation-delay:${Math.min(i, 12) * 35}ms`}
-          >
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <h3 class="truncate text-base">{exercise.name}</h3>
-                {exercise.userId !== null && (
-                  <span class="stencil shrink-0 border border-sodium-dim px-1 text-sodium">
-                    Propio
-                  </span>
+        {exercises.map((exercise, i) => {
+          const isMine = exercise.userId !== null
+          const primary = exercise.muscles[0]
+
+          return (
+            <li
+              class="slab rise p-3.5"
+              style={`animation-delay:${Math.min(i, 12) * 35}ms`}
+            >
+              <div class="flex items-start gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <h3 class="truncate text-base">{exercise.name}</h3>
+                    {isMine && (
+                      <span class="stencil shrink-0 border border-sodium-dim px-1 text-sodium">
+                        Propio
+                      </span>
+                    )}
+                  </div>
+
+                  <p class="stencil mt-1 truncate">
+                    {[
+                      primary?.muscleGroup.name,
+                      exercise.equipment,
+                      EXERCISE_KINDS[exercise.kind],
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </p>
+
+                  {exercise.description && (
+                    <p class="mt-1.5 line-clamp-2 text-sm text-ash">
+                      {exercise.description}
+                    </p>
+                  )}
+
+                  {exercise._count.sessionEntries > 0 && (
+                    <p class="stencil mt-1 text-ash-dim">
+                      {exercise._count.sessionEntries} sesiones
+                    </p>
+                  )}
+                </div>
+
+                {isMine && (
+                  <form method="POST" action={actions.archiveExercise}>
+                    <input type="hidden" name="id" value={exercise.id} />
+                    <button
+                      class="stencil shrink-0 hover:text-signal"
+                      type="submit"
+                      aria-label={`Archivar ${exercise.name}`}
+                    >
+                      ✕
+                    </button>
+                  </form>
                 )}
               </div>
 
-              <p class="stencil mt-1 truncate">
-                {[
-                  exercise.muscles[0]?.muscleGroup.name,
-                  exercise.equipment,
-                  KINDS[exercise.kind],
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
+              {/* El catálogo de la app no se edita; los propios sí. */}
+              {isMine && (
+                <details class="mt-3 border-t border-steel pt-3">
+                  <summary class="stencil cursor-pointer select-none hover:text-chalk">
+                    Editar
+                  </summary>
 
-              {exercise._count.sessionEntries > 0 && (
-                <p class="stencil mt-1 text-ash-dim">
-                  {exercise._count.sessionEntries} sesiones
-                </p>
+                  <form
+                    method="POST"
+                    action={actions.updateExercise}
+                    class="mt-4 grid gap-4"
+                  >
+                    <input type="hidden" name="id" value={exercise.id} />
+
+                    <ExerciseFields
+                      idPrefix={exercise.id}
+                      muscleGroups={muscleGroups}
+                      loggedSessions={exercise._count.sessionEntries}
+                      values={{
+                        name: exercise.name,
+                        kind: exercise.kind,
+                        equipment: exercise.equipment,
+                        description: exercise.description,
+                        muscleGroupId: primary?.muscleGroupId ?? null,
+                      }}
+                    />
+
+                    <div>
+                      <button type="submit" class="btn btn-sm">
+                        Guardar cambios
+                      </button>
+                    </div>
+                  </form>
+                </details>
               )}
-            </div>
-
-            {exercise.userId !== null && (
-              <form method="POST" action={actions.archiveExercise}>
-                <input type="hidden" name="id" value={exercise.id} />
-                <button
-                  class="stencil shrink-0 hover:text-signal"
-                  type="submit"
-                  aria-label={`Archivar ${exercise.name}`}
-                >
-                  ✕
-                </button>
-              </form>
-            )}
-          </li>
-        ))}
+            </li>
+          )
+        })}
       </ul>
     ) : (
       <p class="slab px-5 py-8 text-center text-ash">
@@ -219,51 +269,7 @@ const mine = exercises.filter((e) => e.userId !== null).length
     </p>
 
     <form method="POST" action={actions.createExercise} class="mt-4 grid gap-4">
-      <div class="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label class="stencil mb-1.5 block" for="e-name">Nombre</label>
-          <input
-            id="e-name"
-            name="name"
-            class="field"
-            required
-            maxlength="100"
-            placeholder="Press Arnold"
-          />
-        </div>
-
-        <div>
-          <label class="stencil mb-1.5 block" for="e-equipment">
-            Equipo <span class="text-ash-dim">(opcional)</span>
-          </label>
-          <input
-            id="e-equipment"
-            name="equipment"
-            class="field"
-            maxlength="50"
-            placeholder="Mancuerna"
-          />
-        </div>
-
-        <div>
-          <label class="stencil mb-1.5 block" for="e-kind">Tipo de registro</label>
-          <select id="e-kind" name="kind" class="field" required>
-            {Object.entries(KINDS).map(([value, label]) => (
-              <option value={value}>{label}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label class="stencil mb-1.5 block" for="e-muscle">Músculo principal</label>
-          <select id="e-muscle" name="muscleGroupId" class="field">
-            <option value="">Sin asignar</option>
-            {muscleGroups.map((group) => (
-              <option value={group.id}>{group.name}</option>
-            ))}
-          </select>
-        </div>
-      </div>
+      <ExerciseFields idPrefix="nuevo" muscleGroups={muscleGroups} />
 
       <div>
         <button type="submit" class="btn btn-primary">Crear ejercicio</button>

@@ -5,10 +5,12 @@ import Layout from '../../layouts/Layout.astro'
 import SetRow from '../../components/SetRow.astro'
 import PlateStrip from '../../components/PlateStrip.astro'
 import ExercisePicker from '../../components/ExercisePicker.astro'
+import SetPlan from '../../components/SetPlan.astro'
 import type { PickableExercise } from '../../components/ExercisePicker.astro'
 import { prisma } from '../../lib/prisma'
 import { getCurrentUser } from '../../lib/session'
 import { backTo, num, trim } from '../../lib/format'
+import { plannedSets, repsLabel, summarizeScheme } from '../../lib/scheme'
 
 const { id } = Astro.params
 const user = await getCurrentUser(Astro.locals)
@@ -80,20 +82,38 @@ const index = Number.isFinite(requested)
   : 0
 const current = session.exercises[index]
 
-// Objetivos de la rutina para este ejercicio (si la sesión viene de una).
-const target =
-  current && session.routineId
-    ? await prisma.routineExercise.findFirst({
-        where: { routineId: session.routineId, exerciseId: current.exercise.id },
-        select: {
-          targetSets: true,
-          targetRepsMin: true,
-          targetRepsMax: true,
-          targetWeight: true,
-          restSeconds: true,
+// Plan de la rutina: se trae entero, no solo el del ejercicio abierto,
+// porque hace falta saber si el siguiente va encadenado (superserie).
+const routinePlan = session.routineId
+  ? await prisma.routineExercise.findMany({
+      where: { routineId: session.routineId },
+      orderBy: { position: 'asc' },
+      select: {
+        exerciseId: true,
+        targetSets: true,
+        targetRepsMin: true,
+        targetRepsMax: true,
+        targetWeight: true,
+        restSeconds: true,
+        notes: true,
+        supersetWithPrev: true,
+        sets: {
+          orderBy: { setNumber: 'asc' },
+          select: {
+            repsMin: true,
+            repsMax: true,
+            toFailure: true,
+            weight: true,
+            isDropSet: true,
+            dropPct: true,
+          },
         },
-      })
-    : null
+      },
+    })
+  : []
+
+const planByExercise = new Map(routinePlan.map((re) => [re.exerciseId, re]))
+const target = current ? (planByExercise.get(current.exercise.id) ?? null) : null
 
 // "La última vez": series del entreno completado más reciente con este
 // ejercicio. Sale de la vista v_sets_detail.
@@ -148,31 +168,61 @@ const usesReps = kind === 'weight_reps' || kind === 'bodyweight'
 const usesTime = kind === 'duration' || kind === 'distance'
 const usesDistance = kind === 'distance'
 
+// Series planificadas y cuál toca ahora.
+const plan = target ? plannedSets(target) : []
+const hasScheme = (target?.sets.length ?? 0) > 0
+const nextSetNumber = (current?.sets.filter((s) => !s.isWarmup).length ?? 0) + 1
+const plannedNow = plan[nextSetNumber - 1] ?? null
+/** La que viene después de la que se va a registrar. */
+const plannedNext = plan[nextSetNumber] ?? null
+
 // Precarga: lo que se hizo la última vez en la serie que toca ahora, o el
 // objetivo de la rutina. Se escribe menos y se entrena más.
-const nextSetNumber = (current?.sets.filter((s) => !s.isWarmup).length ?? 0) + 1
 const reference = lastTime[nextSetNumber - 1] ?? lastTime.at(-1)
+const lastLogged = current?.sets.filter((s) => !s.isWarmup).at(-1)
+
+/** Discos de 1.25 kg por lado: no tiene sentido precargar 47.3 kg. */
+const toPlate = (kg: number) => Math.round(kg * 2) / 2
+
+// El peso de un drop-set no se escribe: se calcula bajando el porcentaje
+// indicado al peso de la serie que acaba de hacerse.
+const droppedWeight =
+  plannedNow?.isDropSet && plannedNow.dropPct !== null && lastLogged?.weight != null
+    ? toPlate(num(lastLogged.weight)! * (1 - plannedNow.dropPct / 100))
+    : null
+
 const prefillWeight =
-  reference?.weight != null ? Number(reference.weight) : num(target?.targetWeight)
-const prefillReps = reference?.reps ?? target?.targetRepsMin ?? null
+  plannedNow?.weight ??
+  droppedWeight ??
+  (reference?.weight != null ? Number(reference.weight) : num(target?.targetWeight))
+
+// Con esquema manda el plan: si la rutina dice 12/10/8, la tercera serie
+// tiene que proponer 8, no las 12 que se hicieron la vez pasada.
+const prefillReps = hasScheme
+  ? plannedNow?.toFailure
+    ? null
+    : (plannedNow?.repsMin ?? null)
+  : (reference?.reps ?? target?.targetRepsMin ?? null)
 
 const totalSets = session.exercises.reduce(
   (sum, se) => sum + se.sets.filter((s) => !s.isWarmup).length,
   0,
 )
-const restSeconds = target?.restSeconds ?? 90
 
-const targetLabel = target
-  ? [
-      `${target.targetSets}×`,
-      target.targetRepsMin && target.targetRepsMax
-        ? `${target.targetRepsMin}-${target.targetRepsMax}`
-        : (target.targetRepsMin ?? ''),
-      target.targetWeight ? `@ ${trim(num(target.targetWeight)!)} kg` : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-  : null
+// Superserie: el ejercicio que sigue en la sesión viene encadenado a este.
+const nextInSession = session.exercises[index + 1]
+const chainedNext = nextInSession
+  ? (planByExercise.get(nextInSession.exercise.id)?.supersetWithPrev ?? false)
+  : false
+const chainedPrev = target?.supersetWithPrev ?? false
+const previousInSession = index > 0 ? session.exercises[index - 1] : undefined
+
+// No se descansa ni antes de un drop-set ni entre los miembros de una
+// superserie: el descanso del ejercicio vale al cerrar el bloque.
+const skipRest = Boolean(plannedNext?.isDropSet) || chainedNext
+const restSeconds = skipRest ? 0 : (target?.restSeconds ?? 90)
+
+const targetLabel = target ? summarizeScheme(plan) : null
 ---
 
 <Layout title={session.routineName ?? 'Entreno libre'} bare>
@@ -261,7 +311,51 @@ const targetLabel = target
                 <PlateStrip kg={prefillWeight} />
               </div>
             )}
+
+            {/* Encadenados: de dónde viene y a dónde sigue sin descansar */}
+            {(chainedPrev || chainedNext) && (
+              <p class="stencil mt-3 border-l-2 border-sodium pl-2.5 text-sodium">
+                Superserie ·{' '}
+                {chainedPrev && previousInSession
+                  ? `va pegado a ${previousInSession.exercise.name}`
+                  : ''}
+                {chainedPrev && chainedNext ? ' · ' : ''}
+                {chainedNext && nextInSession
+                  ? `al terminar pasa a ${nextInSession.exercise.name} sin descansar`
+                  : ''}
+              </p>
+            )}
+
+            {target?.notes && (
+              <p class="mt-3 border-l-2 border-steel-hi pl-2.5 text-sm text-ash">
+                {target.notes}
+              </p>
+            )}
           </header>
+
+          {/* Plan serie a serie, con la que toca resaltada */}
+          {plan.length > 0 && usesReps && (
+            <section class="slab mb-5 px-3 py-2.5">
+              <p class="stencil mb-1">
+                Plan · serie{' '}
+                <span class="readout text-chalk">
+                  {Math.min(nextSetNumber, plan.length)}
+                </span>{' '}
+                de <span class="readout text-chalk">{plan.length}</span>
+              </p>
+              <SetPlan sets={plan} current={nextSetNumber} />
+            </section>
+          )}
+
+          {plannedNow?.isDropSet && (
+            <p class="mb-5 border-l-2 border-sodium bg-sodium/10 px-3 py-2 text-sm text-sodium">
+              Drop-set: sin descanso,{' '}
+              {plannedNow.dropPct !== null
+                ? `baja ${plannedNow.dropPct}% el peso`
+                : 'baja el peso'}{' '}
+              y saca {repsLabel(plannedNow)}.
+            </p>
+          )}
 
           {/* La última vez */}
           {lastTime.length > 0 && (
@@ -342,7 +436,14 @@ const targetLabel = target
 
               {usesReps && (
                 <div class="min-w-32 flex-1">
-                  <label class="stencil mb-1.5 block" for="f-reps">Reps</label>
+                  <label class="stencil mb-1.5 block" for="f-reps">
+                    Reps
+                    {plannedNow && (
+                      <span class="ml-1 text-sodium">
+                        objetivo {repsLabel(plannedNow)}
+                      </span>
+                    )}
+                  </label>
                   <div class="flex items-stretch gap-1">
                     <button
                       type="button"
@@ -361,6 +462,7 @@ const targetLabel = target
                       min="0"
                       inputmode="numeric"
                       value={prefillReps ?? ''}
+                      placeholder={plannedNow?.toFailure ? 'al fallo' : undefined}
                     />
                     <button
                       type="button"
@@ -443,6 +545,14 @@ const targetLabel = target
                 de inicio y de fin desde la región de abajo. */}
             <p class="stencil mt-3 hidden text-center text-sodium" data-rest-timer aria-hidden="true"></p>
             <p class="sr-only" data-rest-announce role="status" aria-live="polite"></p>
+
+            {skipRest && (
+              <p class="stencil mt-3 text-center text-ash-dim">
+                {plannedNext?.isDropSet
+                  ? 'Sin descanso: baja el peso y encadena el drop-set.'
+                  : 'Sin descanso: sigue con el ejercicio encadenado.'}
+              </p>
+            )}
           </form>
 
           {/* Avanzar */}

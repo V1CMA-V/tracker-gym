@@ -6,11 +6,21 @@ interface Props {
   color?: string | null
   exerciseCount: number
   muscles: string[]
+  /** Días del plan semanal, ya abreviados: ["Lun", "Jue"]. */
+  days?: string[]
   delay?: number
 }
 
-const { id, name, description, color, exerciseCount, muscles, delay = 0 }: Props =
-  Astro.props
+const {
+  id,
+  name,
+  description,
+  color,
+  exerciseCount,
+  muscles,
+  days = [],
+  delay = 0,
+}: Props = Astro.props
 
 const accent = color ?? '#FFB000'
 ---
@@ -36,6 +46,12 @@ const accent = color ?? '#FFB000'
   {
     description && (
       <p class="mt-1.5 line-clamp-2 text-sm text-ash">{description}</p>
+    )
+  }
+
+  {
+    days.length > 0 && (
+      <p class="stencil mt-2 text-sodium">{days.join(' · ')}</p>
     )
   }
 

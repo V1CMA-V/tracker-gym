@@ -84,6 +84,75 @@ export function compact(n: number): string {
 }
 
 // ---------------------------------------------------------------------
+// Ejercicios
+// ---------------------------------------------------------------------
+
+/**
+ * Cómo se registra cada tipo de ejercicio. El valor es el enum de la base
+ * (`exercise_kind`); la etiqueta es lo que se lee en la UI.
+ */
+export const EXERCISE_KINDS = {
+  weight_reps: 'Peso + reps',
+  bodyweight: 'Peso corporal',
+  duration: 'Tiempo',
+  distance: 'Distancia',
+} as const;
+
+export type ExerciseKindValue = keyof typeof EXERCISE_KINDS;
+
+// ---------------------------------------------------------------------
+// Días de la semana
+// ---------------------------------------------------------------------
+
+/**
+ * Los días en el orden en que se lee una semana aquí: lunes primero.
+ *
+ * `dow` es el número que guarda la base (0 = domingo), igual que
+ * EXTRACT(DOW) y que la función `routine_for_date`. No coincide con la
+ * posición en este arreglo, y esa es justo la razón de que exista.
+ */
+export const WEEK_DAYS = [
+  { dow: 1, short: 'Lun', long: 'lunes' },
+  { dow: 2, short: 'Mar', long: 'martes' },
+  { dow: 3, short: 'Mié', long: 'miércoles' },
+  { dow: 4, short: 'Jue', long: 'jueves' },
+  { dow: 5, short: 'Vie', long: 'viernes' },
+  { dow: 6, short: 'Sáb', long: 'sábado' },
+  { dow: 0, short: 'Dom', long: 'domingo' },
+] as const;
+
+const DOW_BY_EN_SHORT: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/**
+ * Día de la semana (0-6) en la zona horaria del usuario.
+ *
+ * No sale de `Date.getDay()`: el servidor corre en otra zona y a ciertas
+ * horas contestaría el día equivocado, que es justo cuando el usuario abre
+ * la app para ver qué le toca.
+ */
+export function dayOfWeekIn(timezone: string, when: Date = new Date()): number {
+  const short = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    weekday: 'short',
+  }).format(when);
+  return DOW_BY_EN_SHORT[short] ?? when.getDay();
+}
+
+/** Los días de una rutina, abreviados y en orden: "Lun · Jue". */
+export function weekDayLabels(dows: Iterable<number>): string[] {
+  const set = new Set(dows);
+  return WEEK_DAYS.filter((day) => set.has(day.dow)).map((day) => day.short);
+}
+
+// ---------------------------------------------------------------------
 // Plate math
 // ---------------------------------------------------------------------
 

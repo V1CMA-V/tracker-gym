@@ -1,0 +1,87 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+// `bare`: el Nav llama a getCurrentUser y aquí todavía no hay usuario.
+const back = Astro.url.searchParams.get('redirect_url') ?? '/';
+---
+
+<Layout title="Entrar" bare>
+  <div class="mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-10 px-4">
+    <div class="rise">
+      <svg viewBox="0 0 24 24" class="size-7 text-sodium" aria-hidden="true" fill="none">
+        <path d="M3 9v6M21 9v6M6 7v10M18 7v10M8 12h8" stroke="currentColor" stroke-width="2" />
+      </svg>
+      <p class="stencil mt-5">Tracker Gym</p>
+      <h1 class="mt-2 text-4xl sm:text-5xl">Entra y registra</h1>
+      <p class="mt-4 text-ash">Tu cuenta de Google es la única llave.</p>
+    </div>
+
+    <div class="rise">
+      <button
+        id="google-signin"
+        type="button"
+        disabled
+        data-redirect={back}
+        class="slab flex w-full items-center justify-center gap-3 border-steel bg-chalk px-4 py-3 font-display font-bold tracking-tight text-void uppercase transition-transform duration-150 ease-slab hover:-translate-y-0.5 disabled:pointer-events-none disabled:opacity-40"
+      >
+        <svg viewBox="0 0 18 18" class="size-4 shrink-0" aria-hidden="true">
+          <path
+            fill="#4285F4"
+            d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.71v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.61Z"
+          ></path>
+          <path
+            fill="#34A853"
+            d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.34 0-4.32-1.58-5.03-3.71H.96v2.34A9 9 0 0 0 9 18Z"
+          ></path>
+          <path fill="#FBBC05" d="M3.97 10.71a5.4 5.4 0 0 1 0-3.42V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.34Z"
+          ></path>
+          <path
+            fill="#EA4335"
+            d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.34C4.68 5.16 6.66 3.58 9 3.58Z"
+          ></path>
+        </svg>
+        Continuar con Google
+      </button>
+
+      <p id="login-error" role="alert" class="mt-4 hidden text-sm text-signal"></p>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { $clerkStore } from '@clerk/astro/client';
+
+  const button = document.getElementById('google-signin') as HTMLButtonElement | null;
+  const error = document.getElementById('login-error');
+
+  if (button) {
+    const complete = button.dataset.redirect || '/';
+
+    // clerk-js carga async: el botón nace deshabilitado y despierta al estar listo.
+    $clerkStore.subscribe((clerk) => {
+      if (clerk?.loaded) button.disabled = false;
+    });
+
+    button.addEventListener('click', async () => {
+      const signIn = $clerkStore.get()?.client?.signIn;
+      if (!signIn) return;
+
+      button.disabled = true;
+      error?.classList.add('hidden');
+
+      try {
+        await signIn.authenticateWithRedirect({
+          strategy: 'oauth_google',
+          redirectUrl: '/sso-callback',
+          redirectUrlComplete: complete,
+        });
+      } catch (e) {
+        button.disabled = false;
+        if (error) {
+          error.textContent = e instanceof Error ? e.message : 'No se pudo iniciar sesión.';
+          error.classList.remove('hidden');
+        }
+      }
+    });
+  }
+</script>

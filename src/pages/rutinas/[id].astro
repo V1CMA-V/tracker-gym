@@ -4,10 +4,12 @@ import { actions } from 'astro:actions'
 import Layout from '../../layouts/Layout.astro'
 import ExercisePicker from '../../components/ExercisePicker.astro'
 import PlateStrip from '../../components/PlateStrip.astro'
+import SetPlan from '../../components/SetPlan.astro'
 import type { PickableExercise } from '../../components/ExercisePicker.astro'
 import { prisma } from '../../lib/prisma'
 import { getCurrentUser } from '../../lib/session'
-import { clock, num, trim } from '../../lib/format'
+import { clock, num, trim, weekDayLabels } from '../../lib/format'
+import { formatScheme, plannedSets, summarizeScheme } from '../../lib/scheme'
 
 const { id } = Astro.params
 const user = await getCurrentUser(Astro.locals)
@@ -30,6 +32,7 @@ const mutations = [
   Astro.getActionResult(actions.updateRoutineExercise),
   Astro.getActionResult(actions.removeFromRoutine),
   Astro.getActionResult(actions.moveRoutineExercise),
+  Astro.getActionResult(actions.toggleSuperset),
   Astro.getActionResult(actions.updateRoutine),
 ]
 const failed = mutations.find((r) => r?.error)
@@ -56,6 +59,18 @@ const routine = await prisma.routine.findFirst({
         targetWeight: true,
         restSeconds: true,
         notes: true,
+        supersetWithPrev: true,
+        sets: {
+          orderBy: { setNumber: 'asc' },
+          select: {
+            repsMin: true,
+            repsMax: true,
+            toFailure: true,
+            weight: true,
+            isDropSet: true,
+            dropPct: true,
+          },
+        },
         exercise: {
           select: {
             id: true,
@@ -102,6 +117,14 @@ const pickable: PickableExercise[] = catalog
     isCustom: e.userId !== null,
   }))
 
+// Los días que le tocan a esta rutina. Se cambian desde /rutinas, donde
+// está la semana completa; aquí solo se leen.
+const scheduled = await prisma.weeklySchedule.findMany({
+  where: { userId: user.id, routineId: routine.id },
+  select: { dayOfWeek: true },
+})
+const days = weekDayLabels(scheduled.map((row) => row.dayOfWeek))
+
 const accent = routine.color ?? '#FFB000'
 const last = routine.exercises.length - 1
 
@@ -109,7 +132,34 @@ const last = routine.exercises.length - 1
 const usesReps = (kind: string) => kind === 'weight_reps' || kind === 'bodyweight'
 const usesWeight = (kind: string) => kind === 'weight_reps'
 
-const totalSets = routine.exercises.reduce((sum, re) => sum + re.targetSets, 0)
+// El plan de cada ejercicio: su esquema si lo tiene, o el plan plano de
+// siempre. Se calcula una vez y se reparte a la tarjeta y al formulario.
+const rows = routine.exercises.map((re, i) => {
+  const plan = plannedSets(re)
+  return {
+    re,
+    index: i,
+    plan,
+    // El campo de texto se rellena solo cuando hay esquema guardado: si no,
+    // queda vacío y manda el plan plano de arriba.
+    scheme: re.sets.length > 0 ? formatScheme(plan) : '',
+    summary: summarizeScheme(plan),
+  }
+})
+
+const totalSets = rows.reduce((sum, row) => sum + row.plan.length, 0)
+
+// Superserie = racha de ejercicios consecutivos encadenados al anterior.
+// Se agrupan aquí para poder dibujarlos como un solo bloque.
+type Row = (typeof rows)[number]
+const blocks: Row[][] = []
+for (const row of rows) {
+  if (row.index > 0 && row.re.supersetWithPrev && blocks.length > 0) {
+    blocks[blocks.length - 1].push(row)
+  } else {
+    blocks.push([row])
+  }
+}
 ---
 
 <Layout title={routine.name} description={routine.description ?? undefined}>
@@ -127,6 +177,17 @@ const totalSets = routine.exercises.reduce((sum, re) => sum + re.targetSets, 0)
       <span class="stencil">
         <span class="readout mr-1 text-base text-chalk">{totalSets}</span>
         series
+      </span>
+
+      <span class="stencil">
+        {
+          days.length > 0 ? (
+            <span class="text-sodium">{days.join(' · ')}</span>
+          ) : (
+            <span class="text-ash-dim">Sin día asignado</span>
+          )
+        }
+        <a href="/rutinas" class="ml-1.5 underline hover:text-chalk">Cambiar</a>
       </span>
     </div>
 
@@ -154,14 +215,27 @@ const totalSets = routine.exercises.reduce((sum, re) => sum + re.targetSets, 0)
   }
 
   <!-- ===== Ejercicios de la rutina ===== -->
-  <ol class="grid gap-3">
+  <div class="grid gap-3">
     {
-      routine.exercises.map((re, i) => {
+      blocks.map((block) => (
+        <section
+          class:list={[
+            'grid gap-2',
+            block.length > 1 && 'border-l-2 border-sodium/40 pl-2.5',
+          ]}
+        >
+          {block.length > 1 && (
+            <p class="stencil text-sodium">
+              Superserie · {block.length} ejercicios seguidos sin descanso
+            </p>
+          )}
+
+          {block.map(({ re, index: i, plan, scheme, summary }) => {
         const kind = re.exercise.kind
         const weightKg = num(re.targetWeight)
 
         return (
-          <li class="slab rise p-4" style={`animation-delay:${i * 50}ms`}>
+          <article class="slab rise p-4" style={`animation-delay:${i * 50}ms`}>
             <div class="flex items-start gap-3">
               <span class="readout w-9 shrink-0 text-3xl text-steel-hi">
                 {String(re.position).padStart(2, '0')}
@@ -216,23 +290,47 @@ const totalSets = routine.exercises.reduce((sum, re) => sum + re.targetSets, 0)
               </div>
             </div>
 
+            {/* Plan de series y consejos: lo que se lee antes de entrenar */}
+            <div class="mt-3 grid gap-2.5 border-t border-steel pt-3">
+              <p class="stencil">
+                Plan <span class="readout ml-1 text-sm text-chalk">{summary}</span>
+              </p>
+
+              {re.sets.length > 0 && usesReps(kind) && (
+                <SetPlan sets={plan} />
+              )}
+
+              {re.notes && (
+                <p class="border-l-2 border-steel-hi pl-2.5 text-sm text-ash">
+                  {re.notes}
+                </p>
+              )}
+            </div>
+
             {/* Objetivos editables en línea */}
             <form
               method="POST"
               action={actions.updateRoutineExercise}
-              class="mt-4 flex flex-wrap items-end gap-2 border-t border-steel pt-3"
+              class="mt-4 grid gap-3 border-t border-steel pt-3"
             >
               <input type="hidden" name="id" value={re.id} />
 
+              <div class="flex flex-wrap items-end gap-2">
               <label class="w-16">
                 <span class="stencil mb-1 block">Series</span>
                 <input
                   type="number"
                   name="targetSets"
                   class="field px-2 text-center"
-                  value={re.targetSets}
+                  value={plan.length}
                   min="1"
                   max="20"
+                  readonly={scheme !== ''}
+                  title={
+                    scheme !== ''
+                      ? 'Lo decide el esquema de series'
+                      : undefined
+                  }
                   required
                 />
               </label>
@@ -293,21 +391,84 @@ const totalSets = routine.exercises.reduce((sum, re) => sum + re.targetSets, 0)
                   placeholder="s"
                 />
               </label>
+              </div>
 
-              <button type="submit" class="btn btn-sm">Guardar</button>
+              {usesReps(kind) && (
+                <label>
+                  <span class="stencil mb-1 block">Esquema de series</span>
+                  <input
+                    name="scheme"
+                    class="field font-mono"
+                    value={scheme}
+                    placeholder="12/10/8"
+                    maxlength="120"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-describedby={`help-${re.id}`}
+                  />
+                  <span id={`help-${re.id}`} class="mt-1 block text-xs text-ash-dim">
+                    Si lo llenas, manda sobre Series y Reps.{' '}
+                    <code class="text-ash">12/10/8</code> baja reps cada serie ·{' '}
+                    <code class="text-ash">3x8-12</code> tres iguales ·{' '}
+                    <code class="text-ash">3xF</code> al fallo ·{' '}
+                    <code class="text-ash">3x(6/d15@-40%)</code> pesada + drop-set
+                    sin descanso · <code class="text-ash">@60</code> fija el peso.
+                  </span>
+                </label>
+              )}
+
+              <label>
+                <span class="stencil mb-1 block">Notas</span>
+                <textarea
+                  name="notes"
+                  class="field min-h-16 py-2"
+                  rows="2"
+                  placeholder="Sostén 2 segundos en contracción por rep."
+                >{re.notes ?? ''}</textarea>
+              </label>
+
+              <div>
+                <button type="submit" class="btn btn-sm">Guardar</button>
+              </div>
             </form>
 
-            <form method="POST" action={actions.removeFromRoutine} class="mt-2">
-              <input type="hidden" name="id" value={re.id} />
-              <button class="stencil hover:text-signal" type="submit">
-                Quitar de la rutina
-              </button>
-            </form>
-          </li>
+            <div class="mt-2 flex flex-wrap items-center justify-between gap-3">
+              {i > 0 && (
+                <form method="POST" action={actions.toggleSuperset}>
+                  <input type="hidden" name="id" value={re.id} />
+                  <input
+                    type="hidden"
+                    name="value"
+                    value={re.supersetWithPrev ? 'off' : 'on'}
+                  />
+                  <button
+                    type="submit"
+                    class:list={[
+                      'stencil hover:text-chalk',
+                      re.supersetWithPrev && 'text-sodium',
+                    ]}
+                  >
+                    {re.supersetWithPrev
+                      ? '⛓ Separar del anterior'
+                      : '⛓ Encadenar con el anterior'}
+                  </button>
+                </form>
+              )}
+
+              <form method="POST" action={actions.removeFromRoutine}>
+                <input type="hidden" name="id" value={re.id} />
+                <button class="stencil hover:text-signal" type="submit">
+                  Quitar de la rutina
+                </button>
+              </form>
+            </div>
+          </article>
         )
-      })
+          })}
+        </section>
+      ))
     }
-  </ol>
+  </div>
 
   {
     routine.exercises.length === 0 && (

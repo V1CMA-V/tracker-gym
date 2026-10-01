@@ -4,6 +4,7 @@ import { z } from 'astro:schema';
 import { prisma } from '../lib/prisma';
 import { getCurrentUser } from '../lib/session';
 import { epley1RM, num } from '../lib/format';
+import { parseScheme, SchemeError, type PlannedSet } from '../lib/scheme';
 
 /**
  * Todas las mutaciones de la app.
@@ -36,6 +37,35 @@ const optionalNumber = z
   .nullable()
   .optional();
 
+/**
+ * Campos que se tienen que poder VACIAR desde el formulario.
+ *
+ * Astro no manda `""` para un campo de texto vacío: manda `null` (o nada si
+ * el campo no viaja). Los dos casos tienen que acabar en un `null` explícito
+ * —no en `undefined`— porque Prisma ignora `undefined` y dejaría la columna
+ * como estaba: el usuario borra la nota, guarda, y la nota sigue ahí.
+ */
+const clearableText = z
+  .union([z.string(), z.null()])
+  .optional()
+  .transform((v) => {
+    const text = (v ?? '').trim();
+    return text === '' ? null : text;
+  });
+
+// `z.null()` va antes que el número: `z.coerce.number()` convertiría el
+// null en 0 y guardaría un peso de cero donde el usuario quería borrarlo.
+const clearableNumber = z
+  .union([z.literal(''), z.null(), z.coerce.number()])
+  .optional()
+  .transform((v) => (v === '' || v === null || v === undefined ? null : v));
+
+/** Referencia opcional a una fila: el `<option value="">` llega como null. */
+const clearableUuid = z
+  .union([z.literal(''), z.null(), z.uuid()])
+  .optional()
+  .transform((v) => v || null);
+
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
 }
@@ -48,6 +78,27 @@ function notFound(message: string): ActionError {
   return new ActionError({ code: 'NOT_FOUND', message });
 }
 
+function badRequest(message: string): ActionError {
+  return new ActionError({ code: 'BAD_REQUEST', message });
+}
+
+/**
+ * Texto del campo "esquema" → series planificadas.
+ *
+ * El `SchemeError` ya trae un mensaje escrito para el usuario ("No entiendo
+ * 12//8"), así que se reenvía tal cual al formulario.
+ */
+function readScheme(text: string | null | undefined): PlannedSet[] | null {
+  if (!text) return null;
+  try {
+    const sets = parseScheme(text);
+    return sets.length > 0 ? sets : null;
+  } catch (error) {
+    if (error instanceof SchemeError) throw badRequest(error.message);
+    throw error;
+  }
+}
+
 /** Comprueba que la rutina es del usuario y devuelve su id. */
 async function ownedRoutine(routineId: string, userId: string): Promise<string> {
   const routine = await prisma.routine.findFirst({
@@ -56,6 +107,40 @@ async function ownedRoutine(routineId: string, userId: string): Promise<string> 
   });
   if (!routine) throw notFound('Esa rutina no existe.');
   return routine.id;
+}
+
+/**
+ * El primer ejercicio de una rutina no puede ir encadenado al anterior:
+ * no hay anterior. Tras mover o quitar filas se limpia la bandera huérfana.
+ */
+async function clearOrphanSuperset(routineId: string): Promise<void> {
+  const first = await prisma.routineExercise.findFirst({
+    where: { routineId },
+    orderBy: { position: 'asc' },
+    select: { id: true, supersetWithPrev: true },
+  });
+  if (first?.supersetWithPrev) {
+    await prisma.routineExercise.update({
+      where: { id: first.id },
+      data: { supersetWithPrev: false },
+    });
+  }
+}
+
+/**
+ * El nombre no puede pisar al de un ejercicio del catálogo global.
+ *
+ * El índice uq_exercises_user_name usa COALESCE(user_id, uuid-cero), así que
+ * para la base el catálogo global y el personal son espacios separados y
+ * dejaría crear un "Sentadilla" propio junto al de la app. Se bloquea aquí:
+ * dos entradas idénticas en el selector no ayudan.
+ */
+async function assertNameFreeInCatalog(name: string): Promise<void> {
+  const clash = await prisma.exercise.findFirst({
+    where: { userId: null, isArchived: false, name: { equals: name, mode: 'insensitive' } },
+    select: { name: true },
+  });
+  if (clash) throw conflict(`"${clash.name}" ya está en el catálogo de la app.`);
 }
 
 /** Comprueba que la sesión es del usuario y que sigue abierta. */
@@ -102,7 +187,7 @@ const updateRoutine = defineAction({
   input: z.object({
     id: z.uuid(),
     name: z.string().trim().min(1).max(100),
-    description: optionalText,
+    description: clearableText,
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   }),
   handler: async ({ id, ...data }, ctx) => {
@@ -123,9 +208,67 @@ const archiveRoutine = defineAction({
   handler: async ({ id }, ctx) => {
     const user = await getCurrentUser(ctx.locals);
     await ownedRoutine(id, user.id);
-    // Archivar, nunca borrar: las sesiones pasadas apuntan a esta rutina.
-    await prisma.routine.update({ where: { id }, data: { isArchived: true } });
+    await prisma.$transaction([
+      // Archivar, nunca borrar: las sesiones pasadas apuntan a esta rutina.
+      prisma.routine.update({ where: { id }, data: { isArchived: true } }),
+      // El ON DELETE CASCADE de weekly_schedule solo salta al borrar, y aquí
+      // nunca se borra: sin esto, Hoy seguiría sugiriendo una rutina
+      // archivada los días que tenía asignados.
+      prisma.weeklySchedule.deleteMany({ where: { routineId: id } }),
+    ]);
     return { id };
+  },
+});
+
+/**
+ * El plan semanal completo, de una sentada.
+ *
+ * Los siete días viajan en un solo POST porque la tira es un único
+ * formulario: así funciona sin JavaScript, igual que el resto de la app.
+ */
+const setWeeklySchedule = defineAction({
+  accept: 'form',
+  input: z.object({
+    d0: clearableUuid,
+    d1: clearableUuid,
+    d2: clearableUuid,
+    d3: clearableUuid,
+    d4: clearableUuid,
+    d5: clearableUuid,
+    d6: clearableUuid,
+  }),
+  handler: async (days, ctx) => {
+    const user = await getCurrentUser(ctx.locals);
+
+    const week = [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+      dayOfWeek,
+      routineId: days[`d${dayOfWeek}` as keyof typeof days],
+    }));
+
+    // Una sola consulta para los siete días en vez de siete ownedRoutine().
+    const ids = [...new Set(week.map((d) => d.routineId).filter((id) => id !== null))];
+    if (ids.length > 0) {
+      const owned = await prisma.routine.count({
+        where: { id: { in: ids }, userId: user.id, isArchived: false },
+      });
+      if (owned !== ids.length) throw notFound('Alguna de esas rutinas no existe.');
+    }
+
+    await prisma.$transaction(
+      week.map(({ dayOfWeek, routineId }) =>
+        routineId
+          ? prisma.weeklySchedule.upsert({
+              where: { userId_dayOfWeek: { userId: user.id, dayOfWeek } },
+              update: { routineId },
+              create: { userId: user.id, dayOfWeek, routineId },
+            })
+          : // deleteMany y no delete: un día que ya estaba en descanso no
+            // tiene fila y `delete` reventaría.
+            prisma.weeklySchedule.deleteMany({ where: { userId: user.id, dayOfWeek } }),
+      ),
+    );
+
+    return { days: week.filter((d) => d.routineId !== null).length };
   },
 });
 
@@ -144,18 +287,7 @@ const createExercise = defineAction({
   }),
   handler: async ({ name, kind, equipment, description, muscleGroupId }, ctx) => {
     const user = await getCurrentUser(ctx.locals);
-
-    // El índice uq_exercises_user_name trata el catálogo global y el
-    // personal como espacios separados (COALESCE(user_id, uuid-cero)), así
-    // que la base dejaría crear un "Sentadilla" propio junto al de la app.
-    // Se bloquea aquí: dos entradas idénticas en el selector no ayudan.
-    const clash = await prisma.exercise.findFirst({
-      where: { userId: null, isArchived: false, name: { equals: name, mode: 'insensitive' } },
-      select: { name: true },
-    });
-    if (clash) {
-      throw conflict(`"${clash.name}" ya está en el catálogo de la app.`);
-    }
+    await assertNameFreeInCatalog(name);
 
     try {
       return await prisma.exercise.create({
@@ -177,6 +309,69 @@ const createExercise = defineAction({
       }
       throw error;
     }
+  },
+});
+
+const updateExercise = defineAction({
+  accept: 'form',
+  input: z.object({
+    id: z.uuid(),
+    name: z.string().trim().min(1, 'Ponle un nombre.').max(100),
+    kind: z.enum(['weight_reps', 'bodyweight', 'duration', 'distance']),
+    equipment: clearableText,
+    description: clearableText,
+    muscleGroupId: clearableNumber,
+  }),
+  handler: async ({ id, name, kind, equipment, description, muscleGroupId }, ctx) => {
+    const user = await getCurrentUser(ctx.locals);
+
+    // Solo los propios: el catálogo global no se edita desde la UI.
+    const exercise = await prisma.exercise.findFirst({
+      where: { id, userId: user.id },
+      select: { id: true, kind: true },
+    });
+    if (!exercise) throw notFound('Ese ejercicio no es tuyo.');
+
+    await assertNameFreeInCatalog(name);
+
+    // El tipo decide cómo se leen las series ya registradas: un ejercicio
+    // que pasa de "peso + reps" a "peso corporal" esconde los kg de todo su
+    // historial. Con sesiones de por medio, no se cambia.
+    if (kind !== exercise.kind) {
+      const logged = await prisma.sessionExercise.count({ where: { exerciseId: id } });
+      if (logged > 0) {
+        throw badRequest(
+          `No se puede cambiar el tipo: ya hay ${logged} sesiones con este ejercicio.`,
+        );
+      }
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.exercise.update({
+          where: { id },
+          data: { name, kind, equipment, description },
+        });
+
+        // El músculo primario es uno solo: se limpia el anterior y se pone
+        // el nuevo. El upsert cubre que ya estuviera asociado como secundario.
+        await tx.exerciseMuscle.deleteMany({ where: { exerciseId: id, isPrimary: true } });
+        if (muscleGroupId) {
+          await tx.exerciseMuscle.upsert({
+            where: { exerciseId_muscleGroupId: { exerciseId: id, muscleGroupId } },
+            update: { isPrimary: true },
+            create: { exerciseId: id, muscleGroupId, isPrimary: true },
+          });
+        }
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw conflict(`Ya tienes un ejercicio llamado "${name}".`);
+      }
+      throw error;
+    }
+
+    return { id };
   },
 });
 
@@ -244,13 +439,15 @@ const updateRoutineExercise = defineAction({
   input: z.object({
     id: z.uuid(),
     targetSets: z.coerce.number().int().min(1).max(20),
-    targetRepsMin: optionalNumber,
-    targetRepsMax: optionalNumber,
-    targetWeight: optionalNumber,
-    restSeconds: optionalNumber,
-    notes: optionalText,
+    targetRepsMin: clearableNumber,
+    targetRepsMax: clearableNumber,
+    targetWeight: clearableNumber,
+    restSeconds: clearableNumber,
+    notes: clearableText,
+    /** Esquema serie a serie ("12/10/8", "3x(6/d15)"). Vacío = plan plano. */
+    scheme: clearableText,
   }),
-  handler: async ({ id, ...data }, ctx) => {
+  handler: async ({ id, scheme, ...data }, ctx) => {
     const user = await getCurrentUser(ctx.locals);
     const row = await prisma.routineExercise.findFirst({
       where: { id, routine: { userId: user.id } },
@@ -259,14 +456,75 @@ const updateRoutineExercise = defineAction({
     if (!row) throw notFound('Ese ejercicio no está en ninguna rutina tuya.');
 
     if (data.targetRepsMin && data.targetRepsMax && data.targetRepsMax < data.targetRepsMin) {
-      throw new ActionError({
-        code: 'BAD_REQUEST',
-        message: 'El máximo de reps no puede ser menor que el mínimo.',
-      });
+      throw badRequest('El máximo de reps no puede ser menor que el mínimo.');
     }
 
-    await prisma.routineExercise.update({ where: { id }, data });
+    const planned = readScheme(scheme);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.routineExercise.update({
+        where: { id },
+        // Con esquema, las series las cuenta el esquema: el campo "Series"
+        // pasa a ser un reflejo suyo y no una fuente de verdad aparte.
+        data: { ...data, targetSets: planned ? planned.length : data.targetSets },
+      });
+
+      // Reescribir entero es más simple que diferenciar fila por fila, y el
+      // UNIQUE diferido aguanta el borrado y alta dentro de la transacción.
+      await tx.routineSet.deleteMany({ where: { routineExerciseId: id } });
+      if (planned) {
+        await tx.routineSet.createMany({
+          data: planned.map((set, i) => ({
+            routineExerciseId: id,
+            setNumber: i + 1,
+            repsMin: set.repsMin,
+            repsMax: set.repsMax,
+            toFailure: set.toFailure,
+            weight: set.weight,
+            isDropSet: set.isDropSet,
+            dropPct: set.dropPct,
+          })),
+        });
+      }
+    });
+
     return { id };
+  },
+});
+
+/**
+ * Encadena o desencadena un ejercicio con el anterior (superserie).
+ *
+ * El bloque no se guarda como identificador de grupo sino como "va pegado
+ * al de arriba": así reordenar la rutina no obliga a renumerar grupos.
+ */
+const toggleSuperset = defineAction({
+  accept: 'form',
+  input: z.object({
+    id: z.uuid(),
+    value: z.enum(['on', 'off']),
+  }),
+  handler: async ({ id, value }, ctx) => {
+    const user = await getCurrentUser(ctx.locals);
+    const row = await prisma.routineExercise.findFirst({
+      where: { id, routine: { userId: user.id } },
+      select: { id: true, position: true, routineId: true },
+    });
+    if (!row) throw notFound('Ese ejercicio no está en ninguna rutina tuya.');
+
+    if (value === 'on') {
+      const previous = await prisma.routineExercise.findFirst({
+        where: { routineId: row.routineId, position: { lt: row.position } },
+        select: { id: true },
+      });
+      if (!previous) throw badRequest('El primer ejercicio no tiene con quién encadenarse.');
+    }
+
+    await prisma.routineExercise.update({
+      where: { id },
+      data: { supersetWithPrev: value === 'on' },
+    });
+    return { id, supersetWithPrev: value === 'on' };
   },
 });
 
@@ -277,10 +535,11 @@ const removeFromRoutine = defineAction({
     const user = await getCurrentUser(ctx.locals);
     const row = await prisma.routineExercise.findFirst({
       where: { id, routine: { userId: user.id } },
-      select: { id: true },
+      select: { id: true, routineId: true },
     });
     if (!row) throw notFound('Ese ejercicio no está en ninguna rutina tuya.');
     await prisma.routineExercise.delete({ where: { id } });
+    await clearOrphanSuperset(row.routineId);
     return { id };
   },
 });
@@ -323,6 +582,7 @@ const moveRoutineExercise = defineAction({
       }),
     ]);
 
+    await clearOrphanSuperset(current.routineId);
     return { id, moved: true };
   },
 });
@@ -546,12 +806,15 @@ export const server = {
   createRoutine,
   updateRoutine,
   archiveRoutine,
+  setWeeklySchedule,
   createExercise,
+  updateExercise,
   archiveExercise,
   addExerciseToRoutine,
   updateRoutineExercise,
   removeFromRoutine,
   moveRoutineExercise,
+  toggleSuperset,
   startSession,
   addExerciseToSession,
   logSet,

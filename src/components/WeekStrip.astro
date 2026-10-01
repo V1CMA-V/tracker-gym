@@ -1,0 +1,92 @@
+---
+import { actions } from 'astro:actions'
+import { WEEK_DAYS } from '../lib/format'
+
+/**
+ * El plan semanal fijo: qué rutina toca cada día.
+ *
+ * Es lo que lee la página Hoy a través de `routine_for_date`. Los siete
+ * días van en un solo formulario con un botón, en vez de siete selects que
+ * se autoenvían: así no hace falta JavaScript y se revisa la semana entera
+ * antes de guardarla.
+ */
+
+interface Props {
+  routines: { id: string; name: string; color: string | null }[]
+  /** Rutina asignada a cada día, indexada por `dow` (0 = domingo). */
+  assigned: Map<number, string>
+  /** Día de hoy en la zona horaria del usuario. */
+  today: number
+}
+
+const { routines, assigned, today }: Props = Astro.props
+
+const colorOf = (routineId: string | undefined) =>
+  routines.find((r) => r.id === routineId)?.color ?? null
+---
+
+<section class="slab p-4 sm:p-5">
+  <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+    <h2 class="stencil">Mi semana</h2>
+    <p class="stencil text-ash-dim">Lo que aparece en Hoy</p>
+  </div>
+
+  <form method="POST" action={actions.setWeeklySchedule}>
+    <div class="grid gap-1.5 sm:grid-cols-7">
+      {
+        WEEK_DAYS.map((day) => {
+          const current = assigned.get(day.dow)
+          const accent = colorOf(current)
+          const isToday = day.dow === today
+
+          return (
+            <div
+              class:list={[
+                'relative flex items-center gap-3 overflow-hidden border px-3 py-2',
+                'sm:flex-col sm:items-stretch sm:gap-1.5 sm:px-2',
+                isToday ? 'border-sodium bg-sodium/5' : 'border-steel',
+              ]}
+            >
+              {/* Canto de color de la rutina, como en RoutineCard. */}
+              {accent && (
+                <span
+                  class="absolute inset-y-0 left-0 w-1 sm:inset-x-0 sm:inset-y-auto sm:top-0 sm:h-1 sm:w-auto"
+                  style={`background:${accent}`}
+                  aria-hidden="true"
+                />
+              )}
+
+              <label
+                class:list={[
+                  'stencil w-16 shrink-0 sm:w-auto sm:text-center',
+                  isToday ? 'text-sodium' : 'text-ash',
+                ]}
+                for={`dia-${day.dow}`}
+              >
+                {day.short}
+                {isToday && <span class="ml-1 text-sodium sm:ml-0 sm:block">hoy</span>}
+              </label>
+
+              <select
+                id={`dia-${day.dow}`}
+                name={`d${day.dow}`}
+                class="field min-w-0 flex-1 px-2 py-1.5 text-sm"
+              >
+                <option value="">Descanso</option>
+                {routines.map((routine) => (
+                  <option value={routine.id} selected={routine.id === current}>
+                    {routine.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )
+        })
+      }
+    </div>
+
+    <div class="mt-4">
+      <button type="submit" class="btn btn-sm">Guardar semana</button>
+    </div>
+  </form>
+</section>

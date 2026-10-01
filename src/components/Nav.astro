@@ -1,4 +1,6 @@
 ---
+import { SignOutButton } from '@clerk/astro/components';
+
 import { prisma } from '../lib/prisma';
 import { getCurrentUser } from '../lib/session';
 
@@ -70,5 +72,11 @@ const isActive = (href: string) =>
         </a>
       )
     }
+
+    <SignOutButton asChild redirectUrl="/login">
+      <button type="button" class="btn btn-sm btn-ghost shrink-0" title={user.displayName}>
+        Salir
+      </button>
+    </SignOutButton>
   </div>
 </header>

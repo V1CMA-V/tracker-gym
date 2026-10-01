@@ -1,0 +1,62 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+// `bare`: todavía no hay sesión cuando esta página se monta.
+---
+
+<Layout title="Entrando" bare>
+  <div class="flex min-h-dvh flex-col items-center justify-center gap-4">
+    <p id="sso-status" class="stencil animate-pulse text-sodium">Conectando…</p>
+    <p id="sso-error" role="alert" class="hidden max-w-xs text-center text-sm text-signal"></p>
+    {/* Clerk puede pedir un captcha invisible al transferir a sign-up. */}
+    <div id="clerk-captcha"></div>
+  </div>
+</Layout>
+
+<script>
+  import { $clerkStore } from '@clerk/astro/client';
+
+  /**
+   * Esto es lo que hace <AuthenticateWithRedirectCallback />, a mano.
+   *
+   * El componente de @clerk/astro 4.1.7 pasa `Astro.props` dentro de un
+   * `define:vars` de un script `is:inline`, y eso revienta en Astro 7.3.5
+   * ("Astro is not defined"). Llamar a handleRedirectCallback directamente
+   * evita el componente y deja el control de los redirects aquí.
+   */
+  let handled = false;
+
+  const unsubscribe = $clerkStore.subscribe(async (clerk) => {
+    if (!clerk?.loaded || handled) return;
+    handled = true;
+    unsubscribe();
+
+    try {
+      await clerk.handleRedirectCallback(
+        {
+          // El primer login con Google llega como sign-up, no como sign-in.
+          signInFallbackRedirectUrl: '/',
+          signUpFallbackRedirectUrl: '/',
+        },
+        async (to) => {
+          window.location.href = to;
+        },
+      );
+    } catch (e) {
+      const status = document.getElementById('sso-status');
+      const error = document.getElementById('sso-error');
+
+      status?.classList.add('hidden');
+      if (error) {
+        error.textContent =
+          (e instanceof Error ? e.message : 'No se pudo completar el acceso.') +
+          ' Vuelve a intentarlo.';
+        error.classList.remove('hidden');
+      }
+
+      setTimeout(() => {
+        window.location.href = '/login';
+      }, 4000);
+    }
+  });
+</script>

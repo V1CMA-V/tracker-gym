@@ -18,6 +18,15 @@ ALTER TABLE routine_exercises
   ADD CONSTRAINT ck_routine_ex_reps_min CHECK (target_reps_min IS NULL OR target_reps_min > 0),
   ADD CONSTRAINT ck_routine_ex_reps_max CHECK (target_reps_max IS NULL OR target_reps_max >= target_reps_min);
 
+ALTER TABLE routine_sets
+  ADD CONSTRAINT ck_routine_sets_number   CHECK (set_number > 0),
+  ADD CONSTRAINT ck_routine_sets_reps_min CHECK (reps_min IS NULL OR reps_min > 0),
+  ADD CONSTRAINT ck_routine_sets_reps_max CHECK (reps_max IS NULL OR reps_max >= reps_min),
+  ADD CONSTRAINT ck_routine_sets_weight   CHECK (weight IS NULL OR weight >= 0),
+  ADD CONSTRAINT ck_routine_sets_drop_pct CHECK (drop_pct IS NULL OR drop_pct BETWEEN 1 AND 99),
+  -- Al fallo y un número de reps son excluyentes.
+  ADD CONSTRAINT ck_routine_sets_reps     CHECK (NOT (to_failure AND reps_min IS NOT NULL));
+
 ALTER TABLE workout_sessions
   ADD CONSTRAINT ck_sessions_ended_at CHECK (ended_at IS NULL OR ended_at >= started_at);
 
@@ -49,6 +58,13 @@ CREATE INDEX idx_exercises_user ON exercises (user_id) WHERE NOT is_archived;
 DROP INDEX IF EXISTS "routine_exercises_routine_id_position_key";
 ALTER TABLE routine_exercises
   ADD CONSTRAINT uq_routine_exercises_position UNIQUE (routine_id, position)
+  DEFERRABLE INITIALLY DEFERRED;
+
+-- Reescribir el esquema de series borra y recrea las filas en una sola
+-- transacción, así que el UNIQUE tiene que tolerar colisiones intermedias.
+DROP INDEX IF EXISTS "routine_sets_routine_exercise_id_set_number_key";
+ALTER TABLE routine_sets
+  ADD CONSTRAINT uq_routine_sets_number UNIQUE (routine_exercise_id, set_number)
   DEFERRABLE INITIALLY DEFERRED;
 
 DROP INDEX IF EXISTS "session_exercises_session_id_position_key";

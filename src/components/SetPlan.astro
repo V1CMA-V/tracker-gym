@@ -1,0 +1,67 @@
+---
+import { trim } from '../lib/format'
+import { repsLabel, type PlannedSet } from '../lib/scheme'
+
+interface Props {
+  sets: PlannedSet[]
+  /** Serie que toca ahora (1-based). Se resalta durante el entreno. */
+  current?: number | null
+  /** El número de serie se oculta cuando solo se quiere leer el plan. */
+  numbered?: boolean
+}
+
+const { sets, current = null, numbered = true }: Props = Astro.props
+---
+
+<ol class="grid gap-1">
+  {
+    sets.map((set, i) => {
+      const n = i + 1
+      const active = current === n
+
+      return (
+        <li
+          class:list={[
+            'flex items-baseline gap-2.5 px-1.5 py-1',
+            active && 'border-l-2 border-sodium bg-sodium/10 pl-2',
+            set.isDropSet && 'ml-4',
+          ]}
+        >
+          {numbered && (
+            <span
+              class:list={[
+                'readout w-5 shrink-0 text-center text-xs',
+                active ? 'text-sodium' : 'text-ash-dim',
+              ]}
+            >
+              {set.isDropSet ? '↳' : n}
+            </span>
+          )}
+
+          <span
+            class:list={[
+              'readout text-sm',
+              set.toFailure ? 'text-signal' : active ? 'text-chalk' : 'text-ash',
+            ]}
+          >
+            {repsLabel(set)}
+            {!set.toFailure && <span class="stencil ml-0.5 text-ash-dim">reps</span>}
+          </span>
+
+          {set.weight !== null && (
+            <span class="readout text-sm text-sodium">
+              {trim(set.weight)}
+              <span class="stencil ml-0.5 text-ash-dim">kg</span>
+            </span>
+          )}
+
+          {set.isDropSet && (
+            <span class="stencil text-ash-dim">
+              drop{set.dropPct !== null ? ` −${set.dropPct}%` : ''} · sin descanso
+            </span>
+          )}
+        </li>
+      )
+    })
+  }
+</ol>

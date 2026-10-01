@@ -53,8 +53,13 @@ enum WeightUnit {
 // ---------------------------------------------------------------------
 model User {
   id            String     @id @default(uuid()) @db.Uuid
+  /// Enlace con Clerk. Nullable: las filas sembradas antes de auth no lo tienen.
+  /// La llave de la app sigue siendo `id` (hay SQL crudo que la castea a uuid).
+  clerkId       String?    @unique @map("clerk_id") @db.VarChar(64)
   email         String     @unique @db.VarChar(255)
-  passwordHash  String     @map("password_hash")
+  /// Legacy: Clerk custodia las credenciales. Se conserva la columna por si
+  /// algún día hubiera que volver a un login local.
+  passwordHash  String?    @map("password_hash")
   displayName   String     @map("display_name") @db.VarChar(100)
   role          RoleUser   @default(USER)
   preferredUnit WeightUnit @default(kg) @map("preferred_unit")
@@ -145,22 +150,59 @@ model Routine {
 }
 
 model RoutineExercise {
-  id            String   @id @default(uuid()) @db.Uuid
-  routineId     String   @map("routine_id") @db.Uuid
-  exerciseId    String   @map("exercise_id") @db.Uuid
-  position      Int      @db.SmallInt // 1, 2, 3...
+  id         String @id @default(uuid()) @db.Uuid
+  routineId  String @map("routine_id") @db.Uuid
+  exerciseId String @map("exercise_id") @db.Uuid
+  position   Int    @db.SmallInt // 1, 2, 3...
+
+  /// Plan plano: se usa cuando el ejercicio no tiene `sets` detalladas.
+  /// Con esquema guardado, `targetSets` refleja cuántas filas hay.
   targetSets    Int      @default(3) @map("target_sets") @db.SmallInt
   targetRepsMin Int?     @map("target_reps_min") @db.SmallInt // rango 8-12
   targetRepsMax Int?     @map("target_reps_max") @db.SmallInt
   targetWeight  Decimal? @map("target_weight") @db.Decimal(6, 2)
-  restSeconds   Int?     @default(90) @map("rest_seconds") @db.SmallInt
-  notes         String?
 
-  routine  Routine  @relation(fields: [routineId], references: [id], onDelete: Cascade)
-  exercise Exercise @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+  /// Descanso DESPUÉS del ejercicio. En una superserie solo cuenta el del
+  /// último ejercicio del bloque: entre sus miembros no se descansa.
+  restSeconds Int? @default(90) @map("rest_seconds") @db.SmallInt
+
+  /// Superserie: este ejercicio se encadena con el anterior de la rutina
+  /// sin descanso. El bloque es la racha de posiciones consecutivas con la
+  /// bandera puesta, así que reordenar no obliga a renumerar nada.
+  supersetWithPrev Boolean @default(false) @map("superset_with_prev")
+
+  /// Consejos de ejecución: tempo, contracción, rango... Se muestran
+  /// durante el entreno, que es cuando sirven.
+  notes String?
+
+  routine  Routine      @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  exercise Exercise     @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+  sets     RoutineSet[]
 
   @@unique([routineId, position]) // en SQL se vuelve DEFERRABLE para reordenar
   @@map("routine_exercises")
+}
+
+/// Una serie planificada. Existe para que las reps puedan variar entre
+/// series (12/10/8), para marcar las que van al fallo y para los drop-sets,
+/// que continúan la serie anterior sin descanso y con menos peso.
+model RoutineSet {
+  id                String   @id @default(uuid()) @db.Uuid
+  routineExerciseId String   @map("routine_exercise_id") @db.Uuid
+  setNumber         Int      @map("set_number") @db.SmallInt
+  repsMin           Int?     @map("reps_min") @db.SmallInt
+  repsMax           Int?     @map("reps_max") @db.SmallInt
+  /// Sin número de reps: se llega hasta donde se pueda.
+  toFailure         Boolean  @default(false) @map("to_failure")
+  weight            Decimal? @db.Decimal(6, 2)
+  isDropSet         Boolean  @default(false) @map("is_drop_set")
+  /// Cuánto peso se baja respecto a la serie anterior (porcentaje).
+  dropPct           Int?     @map("drop_pct") @db.SmallInt
+
+  routineExercise RoutineExercise @relation(fields: [routineExerciseId], references: [id], onDelete: Cascade)
+
+  @@unique([routineExerciseId, setNumber]) // DEFERRABLE en SQL
+  @@map("routine_sets")
 }
 
 // ---------------------------------------------------------------------

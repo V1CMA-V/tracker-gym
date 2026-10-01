@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 
+import clerk from '@clerk/astro';
 import tailwindcss from '@tailwindcss/vite';
 import vercel from '@astrojs/vercel';
 
@@ -10,6 +11,8 @@ export default defineConfig({
   // que prerenderizar: la app corre entera en el servidor.
   output: 'server',
   adapter: vercel(),
+
+  integrations: [clerk()],
 
   vite: {
     plugins: [tailwindcss()],

@@ -1,0 +1,126 @@
+---
+import { EXERCISE_KINDS } from '../lib/format'
+import type { ExerciseKindValue } from '../lib/format'
+
+/**
+ * Los campos de un ejercicio, compartidos por el alta y la edición.
+ *
+ * Están en un componente porque hay un formulario de edición por tarjeta:
+ * duplicar el marcado garantizaba que los dos se desincronizaran a la
+ * primera de cambio.
+ */
+
+export interface ExerciseValues {
+  name: string
+  kind: ExerciseKindValue
+  equipment: string | null
+  description: string | null
+  muscleGroupId: number | null
+}
+
+interface Props {
+  /** Prefijo de los `id`: hay un formulario por tarjeta y no se pueden repetir. */
+  idPrefix: string
+  muscleGroups: { id: number; name: string }[]
+  /** Valores actuales al editar; vacío al crear. */
+  values?: ExerciseValues | null
+  /**
+   * Sesiones ya registradas con este ejercicio. Con una o más, el tipo de
+   * registro queda bloqueado: cambiarlo escondería los datos del historial.
+   */
+  loggedSessions?: number
+}
+
+const { idPrefix, muscleGroups, values = null, loggedSessions = 0 }: Props =
+  Astro.props
+
+const id = (field: string) => `${idPrefix}-${field}`
+const kind = values?.kind ?? 'weight_reps'
+const kindLocked = loggedSessions > 0
+---
+
+<div class="grid gap-4 sm:grid-cols-2">
+  <div>
+    <label class="stencil mb-1.5 block" for={id('name')}>Nombre</label>
+    <input
+      id={id('name')}
+      name="name"
+      class="field"
+      required
+      maxlength="100"
+      value={values?.name ?? ''}
+      placeholder="Press Arnold"
+    />
+  </div>
+
+  <div>
+    <label class="stencil mb-1.5 block" for={id('equipment')}>
+      Equipo <span class="text-ash-dim">(opcional)</span>
+    </label>
+    <input
+      id={id('equipment')}
+      name="equipment"
+      class="field"
+      maxlength="50"
+      value={values?.equipment ?? ''}
+      placeholder="Mancuerna"
+    />
+  </div>
+
+  <div>
+    <label class="stencil mb-1.5 block" for={id('kind')}>Tipo de registro</label>
+    <select
+      id={id('kind')}
+      name={kindLocked ? undefined : 'kind'}
+      class="field disabled:cursor-not-allowed disabled:opacity-50"
+      disabled={kindLocked}
+      required
+    >
+      {
+        Object.entries(EXERCISE_KINDS).map(([value, label]) => (
+          <option value={value} selected={value === kind}>
+            {label}
+          </option>
+        ))
+      }
+    </select>
+
+    {/* Un select deshabilitado no viaja en el POST: el valor va aparte. */}
+    {kindLocked && <input type="hidden" name="kind" value={kind} />}
+    {
+      kindLocked && (
+        <p class="stencil mt-1 text-ash-dim">
+          No se puede cambiar: {loggedSessions} sesiones registradas
+        </p>
+      )
+    }
+  </div>
+
+  <div>
+    <label class="stencil mb-1.5 block" for={id('muscle')}>Músculo principal</label>
+    <select id={id('muscle')} name="muscleGroupId" class="field">
+      <option value="">Sin asignar</option>
+      {
+        muscleGroups.map((group) => (
+          <option value={group.id} selected={group.id === values?.muscleGroupId}>
+            {group.name}
+          </option>
+        ))
+      }
+    </select>
+  </div>
+
+  <div class="sm:col-span-2">
+    <label class="stencil mb-1.5 block" for={id('description')}>
+      Descripción <span class="text-ash-dim">(opcional)</span>
+    </label>
+    <textarea
+      id={id('description')}
+      name="description"
+      class="field min-h-16 py-2"
+      rows="2"
+      placeholder="Asiento en 4, agarre ancho. Codos pegados."
+      set:text={values?.description ?? ''}
+    />
+  </div>
+</div>
