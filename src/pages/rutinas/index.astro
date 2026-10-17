@@ -7,7 +7,7 @@ import WeekStrip from '../../components/WeekStrip.astro'
 import EmptyState from '../../components/EmptyState.astro'
 import { prisma } from '../../lib/prisma'
 import { getCurrentUser } from '../../lib/session'
-import { backTo, dayOfWeekIn, weekDayLabels } from '../../lib/format'
+import { backTo, dayOfWeekIn } from '../../lib/format'
 
 const user = await getCurrentUser(Astro.locals)
 
@@ -23,9 +23,17 @@ if (scheduled && !scheduled.error) {
   return Astro.redirect(backTo(Astro.url), 303)
 }
 
-// Cada error se muestra junto al formulario que lo produjo.
+// "Empezar" desde una tarjeta, igual que el héroe de Hoy. Si ya hay una
+// sesión abierta la action devuelve esa, así que nunca se duplica.
+const started = Astro.getActionResult(actions.startSession)
+if (started && !started.error) {
+  return Astro.redirect(`/sesion/${started.data.id}`, 303)
+}
+
+// Cada error se muestra junto al formulario que lo produjo: el del alta en su
+// propia sección, y los de la semana y el arranque en la alerta de arriba.
 const error = created?.error?.message
-const scheduleError = scheduled?.error?.message
+const topError = scheduled?.error?.message ?? started?.error?.message
 
 // Una sola query: rutinas + sus ejercicios + el grupo muscular de cada uno.
 const routines = await prisma.routine.findMany({
@@ -59,11 +67,9 @@ const schedule = await prisma.weeklySchedule.findMany({
 })
 const assigned = new Map(schedule.map((row) => [row.dayOfWeek, row.routineId]))
 
-/** Días que le tocan a una rutina, ya abreviados: ["Lun", "Jue"]. */
+/** Días que le tocan a una rutina, en `dow` crudo: la tarjeta los pinta. */
 const daysOf = (routineId: string) =>
-  weekDayLabels(
-    schedule.filter((row) => row.routineId === routineId).map((row) => row.dayOfWeek),
-  )
+  schedule.filter((row) => row.routineId === routineId).map((row) => row.dayOfWeek)
 
 /** Grupos musculares distintos que toca la rutina, en orden de aparición. */
 const musclesOf = (routine: (typeof routines)[number]) => [
@@ -80,7 +86,7 @@ const palette = ['#E8A33D', '#C8372D', '#2B5FAE', '#6FB98A', '#C8A02D', '#9AA0A6
 <Layout title="Rutinas">
   <header class="mb-9 flex flex-wrap items-end justify-between gap-4">
     <div>
-      <p class="stencil">Plantillas</p>
+      <p class="stencil">Tu plan</p>
       <h1 class="mt-2 text-5xl sm:text-6xl">Rutinas</h1>
     </div>
     <p class="readout text-4xl text-steel-hi">
@@ -89,12 +95,12 @@ const palette = ['#E8A33D', '#C8372D', '#2B5FAE', '#6FB98A', '#C8A02D', '#9AA0A6
   </header>
 
   {
-    scheduleError && (
+    topError && (
       <p
         role="alert"
         class="mb-5 rounded-slab border border-signal/40 bg-signal/10 px-4 py-3 text-sm text-signal"
       >
-        {scheduleError}
+        {topError}
       </p>
     )
   }
@@ -103,7 +109,12 @@ const palette = ['#E8A33D', '#C8372D', '#2B5FAE', '#6FB98A', '#C8A02D', '#9AA0A6
     routines.length > 0 && (
       <div class="mb-8">
         <WeekStrip
-          routines={routines}
+          routines={routines.map((routine) => ({
+            id: routine.id,
+            name: routine.name,
+            color: routine.color,
+            exerciseCount: routine._count.exercises,
+          }))}
           assigned={assigned}
           today={dayOfWeekIn(user.timezone)}
         />
@@ -122,7 +133,7 @@ const palette = ['#E8A33D', '#C8372D', '#2B5FAE', '#6FB98A', '#C8A02D', '#9AA0A6
             color={routine.color}
             exerciseCount={routine._count.exercises}
             muscles={musclesOf(routine)}
-            days={daysOf(routine.id)}
+            dows={daysOf(routine.id)}
             delay={i}
           />
         ))}
@@ -135,9 +146,22 @@ const palette = ['#E8A33D', '#C8372D', '#2B5FAE', '#6FB98A', '#C8A02D', '#9AA0A6
     )
   }
 
-  <!-- Alta de rutina -->
-  <section class="slab mt-12 p-5 sm:p-6">
-    <h2 class="text-2xl">Nueva rutina</h2>
+  <!--
+    Alta de rutina. Plegada: es mantenimiento, no a lo que se viene a esta
+    página. Abierta de oficio si el alta falló —si no, el mensaje de error se
+    quedaría escondido dentro— o si todavía no hay ninguna rutina.
+    `group` va en el <details>, que es quien lleva el atributo `open`.
+  -->
+  <details class="slab group mt-12 p-5 sm:p-6" open={Boolean(error) || routines.length === 0}>
+    <summary
+      class="flex cursor-pointer list-none select-none items-center gap-2 font-display text-2xl"
+    >
+      <span
+        class="text-sodium transition-transform group-open:rotate-45"
+        aria-hidden="true"
+      >+</span>
+      Nueva rutina
+    </summary>
 
     {
       error && (
@@ -203,5 +227,7 @@ const palette = ['#E8A33D', '#C8372D', '#2B5FAE', '#6FB98A', '#C8A02D', '#9AA0A6
         <button type="submit" class="btn btn-primary">Crear rutina</button>
       </div>
     </form>
-  </section>
+  </details>
+
+  <script src="../../scripts/week.ts"></script>
 </Layout>

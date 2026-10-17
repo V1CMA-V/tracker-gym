@@ -1,4 +1,7 @@
 ---
+import { actions } from 'astro:actions'
+import { WEEK_DAYS, weekDayLabels } from '../lib/format'
+
 interface Props {
   id: string
   name: string
@@ -6,8 +9,8 @@ interface Props {
   color?: string | null
   exerciseCount: number
   muscles: string[]
-  /** Días del plan semanal, ya abreviados: ["Lun", "Jue"]. */
-  days?: string[]
+  /** Días del plan semanal, en `dow` crudo (0 = domingo). */
+  dows?: number[]
   delay?: number
 }
 
@@ -18,15 +21,26 @@ const {
   color,
   exerciseCount,
   muscles,
-  days = [],
+  dows = [],
   delay = 0,
 }: Props = Astro.props
 
 const accent = color ?? '#E8A33D'
+const href = `/rutinas/${id}`
+
+/** L M X J V S D, en el mismo orden que WEEK_DAYS (lunes primero). */
+const LETTERS = ['L', 'M', 'X', 'J', 'V', 'S', 'D']
+const assigned = new Set(dows)
+const dayLabels = weekDayLabels(dows)
 ---
 
-<a
-  href={`/rutinas/${id}`}
+{/*
+  Deja de ser un <a> que lo envuelve todo: ahora lleva dentro el formulario
+  de "Empezar", y un <form> no puede ir dentro de un enlace. El enlace al
+  detalle lo estira el título con `after:inset-0`, y la fila de acciones se
+  queda por encima con `z-10`.
+*/}
+<article
   class="slab slab-lift rise group relative flex flex-col overflow-hidden p-5 pl-6"
   style={`animation-delay:${delay * 70}ms`}
 >
@@ -43,24 +57,48 @@ const accent = color ?? '#E8A33D'
     aria-hidden="true"></span>
 
   <div class="relative flex flex-1 flex-col">
-    <div class="flex items-start justify-between gap-3">
-      <h3 class="text-2xl leading-tight transition-colors group-hover:text-sodium">
+    <h3 class="text-2xl leading-tight">
+      <a href={href} class="transition-colors after:absolute after:inset-0 group-hover:text-sodium">
         {name}
-      </h3>
-      <span
-        class="readout shrink-0 text-2xl text-steel-hi transition-colors group-hover:text-ash"
-      >
-        {String(exerciseCount).padStart(2, '0')}
-      </span>
-    </div>
+      </a>
+    </h3>
+
+    {/* El número, rotulado: "10" a secas no le dice nada a nadie. */}
+    <p class="stencil mt-2">
+      <span class="readout mr-1.5 text-base text-chalk">{exerciseCount}</span>
+      {exerciseCount === 1 ? 'ejercicio' : 'ejercicios'}
+    </p>
 
     {
       description && (
-        <p class="mt-2 line-clamp-2 text-sm leading-relaxed text-ash">{description}</p>
+        <p class="mt-2.5 line-clamp-2 text-sm leading-relaxed text-ash">{description}</p>
       )
     }
 
-    {days.length > 0 && <p class="stencil mt-2.5 text-sodium">{days.join(' · ')}</p>}
+    {/* La semana en siete letras: se ve en qué días cae sin leer nada. */}
+    <p class="mt-3 flex items-center gap-1">
+      <span class="sr-only">
+        {dayLabels.length > 0 ? `Días: ${dayLabels.join(', ')}` : 'Sin día asignado'}
+      </span>
+      {
+        WEEK_DAYS.map((day, i) => (
+          <span
+            class:list={[
+              'stencil flex size-5 items-center justify-center rounded-full',
+              !assigned.has(day.dow) && 'text-steel-hi',
+            ]}
+            style={
+              assigned.has(day.dow)
+                ? `background:${accent}1f;color:${accent}`
+                : undefined
+            }
+            aria-hidden="true"
+          >
+            {LETTERS[i]}
+          </span>
+        ))
+      }
+    </p>
 
     <div class="mt-auto flex flex-wrap items-center gap-1.5 pt-5">
       {
@@ -75,5 +113,28 @@ const accent = color ?? '#E8A33D'
         )
       }
     </div>
+
+    {/* Encima del enlace estirado del título: si no, no se podrían pulsar. */}
+    <div class="relative z-10 mt-4 flex flex-wrap gap-2">
+      {
+        exerciseCount > 0 ? (
+          <>
+            <form method="POST" action={actions.startSession}>
+              <input type="hidden" name="routineId" value={id} />
+              <button type="submit" class="btn btn-sm btn-primary">
+                Empezar
+              </button>
+            </form>
+            <a href={href} class="btn btn-sm btn-ghost">
+              Ver
+            </a>
+          </>
+        ) : (
+          <a href={href} class="btn btn-sm btn-ghost">
+            Agregar ejercicios
+          </a>
+        )
+      }
+    </div>
   </div>
-</a>
+</article>

@@ -5,14 +5,22 @@ import { WEEK_DAYS } from '../lib/format'
 /**
  * El plan semanal fijo: qué rutina toca cada día.
  *
- * Es lo que lee la página Hoy a través de `routine_for_date`. Los siete
- * días van en un solo formulario con un botón, en vez de siete selects que
- * se autoenvían: así no hace falta JavaScript y se revisa la semana entera
- * antes de guardarla.
+ * Es lo que lee la página Hoy a través de `routine_for_date`.
+ *
+ * El marcado tiene DOS caras sobre el mismo formulario:
+ *
+ *  - Sin JavaScript se ven los siete `<select>` y el botón "Guardar semana".
+ *    Un POST normal, la semana entera se revisa antes de guardarla.
+ *  - Con JavaScript (`src/scripts/week.ts` pone `data-enhanced`) cada día se
+ *    convierte en un botón que abre una hoja con las rutinas, y se guarda
+ *    solo. Los `<select>` siguen ahí, ocultos: son la fuente de verdad que
+ *    el script lee para armar el FormData.
+ *
+ * Quién se ve lo deciden las reglas `[data-week]` de global.css.
  */
 
 interface Props {
-  routines: { id: string; name: string; color: string | null }[]
+  routines: { id: string; name: string; color: string | null; exerciseCount: number }[]
   /** Rutina asignada a cada día, indexada por `dow` (0 = domingo). */
   assigned: Map<number, string>
   /** Día de hoy en la zona horaria del usuario. */
@@ -21,40 +29,51 @@ interface Props {
 
 const { routines, assigned, today }: Props = Astro.props
 
-const colorOf = (routineId: string | undefined) =>
-  routines.find((r) => r.id === routineId)?.color ?? null
+const routineOf = (routineId: string | undefined) =>
+  routines.find((r) => r.id === routineId) ?? null
+
+const todayRoutine = routineOf(assigned.get(today))
 ---
 
-<section class="slab p-5 sm:p-6">
+<section class="slab p-5 sm:p-6" data-week>
   <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
     <h2 class="stencil">Mi semana</h2>
-    <p class="stencil text-ash-dim">Lo que aparece en Hoy</p>
+    {/* El estado del autoguardado sustituye al texto de ayuda cuando hay algo
+        que decir; sin JavaScript nunca se rellena y el texto se queda. */}
+    <p class="stencil text-ash-dim">
+      <span data-week-status aria-live="polite"></span>
+      <span data-week-hint>Lo que aparece en Hoy</span>
+    </p>
   </div>
 
-  <form method="POST" action={actions.setWeeklySchedule}>
+  <form method="POST" action={actions.setWeeklySchedule} data-week-form>
     <div class="grid gap-1.5 sm:grid-cols-7">
       {
         WEEK_DAYS.map((day) => {
           const current = assigned.get(day.dow)
-          const accent = colorOf(current)
+          const routine = routineOf(current)
           const isToday = day.dow === today
 
           return (
             <div
               class:list={[
                 'relative flex items-center gap-3 overflow-hidden rounded-field border px-3 py-2.5 transition-colors',
-                'sm:flex-col sm:items-stretch sm:gap-1.5 sm:px-2',
-                isToday ? 'border-sodium/45 bg-sodium/[0.07]' : 'border-steel hover:border-steel-hi',
+                'sm:min-h-24 sm:flex-col sm:items-stretch sm:gap-1.5 sm:px-2.5 sm:py-3',
+                isToday
+                  ? 'border-sodium/45 bg-sodium/[0.07]'
+                  : 'border-steel hover:border-steel-hi',
               ]}
+              data-day={day.dow}
             >
-              {/* Canto de color de la rutina, como en RoutineCard. */}
-              {accent && (
-                <span
-                  class="absolute inset-y-0 left-0 w-[3px] sm:inset-x-0 sm:inset-y-auto sm:top-0 sm:h-[3px] sm:w-auto"
-                  style={`background:${accent}`}
-                  aria-hidden="true"
-                />
-              )}
+              {/* Canto de color de la rutina, como en RoutineCard. Se pinta
+                  siempre: en descanso va transparente y el script solo le
+                  cambia el `background`. */}
+              <span
+                class="absolute inset-y-0 left-0 w-[3px] sm:inset-x-0 sm:inset-y-auto sm:top-0 sm:h-[3px] sm:w-auto"
+                style={`background:${routine?.color ?? 'transparent'}`}
+                data-day-edge
+                aria-hidden="true"
+              />
 
               <label
                 class:list={[
@@ -67,18 +86,49 @@ const colorOf = (routineId: string | undefined) =>
                 {isToday && <span class="ml-1 text-sodium sm:ml-0 sm:block">hoy</span>}
               </label>
 
-              <select
-                id={`dia-${day.dow}`}
-                name={`d${day.dow}`}
-                class="field min-w-0 flex-1 px-2 py-1.5 text-sm"
+              <div class="min-w-0 flex-1 sm:flex sm:flex-col sm:justify-center">
+                {/* Cara táctil. Oculta hasta que el script confirma que hay JS. */}
+                <div data-day-display>
+                  <p
+                    class:list={[
+                      'text-pretty font-display text-lg leading-tight',
+                      routine ? 'text-chalk' : 'text-ash-dim',
+                    ]}
+                    data-day-name
+                  >
+                    {routine?.name ?? 'Descanso'}
+                  </p>
+                  <p class="stencil mt-0.5 text-ash-dim" data-day-meta>
+                    {routine ? `${routine.exerciseCount} ej` : ''}
+                  </p>
+                </div>
+
+                <select
+                  id={`dia-${day.dow}`}
+                  name={`d${day.dow}`}
+                  class="field min-w-0 flex-1 px-2 py-1.5 text-sm"
+                  data-day-select
+                >
+                  <option value="">Descanso</option>
+                  {routines.map((r) => (
+                    <option value={r.id} selected={r.id === current}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Toda la tarjeta es el botón. Va encima del canto y del texto,
+                  que son decorativos. */}
+              <button
+                type="button"
+                class="absolute inset-0 z-10 cursor-pointer rounded-field"
+                data-day-trigger
+                data-dow={day.dow}
+                data-long={day.long}
               >
-                <option value="">Descanso</option>
-                {routines.map((routine) => (
-                  <option value={routine.id} selected={routine.id === current}>
-                    {routine.name}
-                  </option>
-                ))}
-              </select>
+                <span class="sr-only">Cambiar la rutina del {day.long}</span>
+              </button>
             </div>
           )
         })
@@ -86,7 +136,104 @@ const colorOf = (routineId: string | undefined) =>
     </div>
 
     <div class="mt-4">
-      <button type="submit" class="btn btn-sm">Guardar semana</button>
+      <button type="submit" class="btn btn-sm" data-week-save>Guardar semana</button>
     </div>
   </form>
+
+  {/* Empezar desde aquí lo que toca hoy. Fuera del formulario de la semana:
+      un <form> no puede anidarse dentro de otro. Se renderiza siempre —oculto
+      si hoy es descanso— para que el script pueda mostrarlo cuando se asigne
+      una rutina al día de hoy sin tener que construir el marcado a mano. */}
+  <div data-today={String(today)} hidden={!todayRoutine}>
+    <form
+      method="POST"
+      action={actions.startSession}
+      class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-steel pt-4"
+    >
+      <input type="hidden" name="routineId" value={todayRoutine?.id ?? ''} data-today-id />
+      <p class="stencil flex-1">
+        Hoy toca{' '}
+        <span class="font-display text-base text-chalk" data-today-name>
+          {todayRoutine?.name}
+        </span>
+      </p>
+      <button type="submit" class="btn btn-sm btn-primary">Entrenar</button>
+    </form>
+  </div>
+
+  {/* Una sola hoja para los siete días: el script le cambia el título y la
+      marca de la opción activa. Las opciones se renderizan en el servidor
+      para que ninguna clase de Tailwind viva dentro de un string de JS. */}
+  <dialog class="sheet" data-week-sheet aria-labelledby="hoja-dia">
+    <div class="p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-4">
+      <div class="mb-3 flex items-baseline justify-between gap-3">
+        <h3 class="text-2xl capitalize" id="hoja-dia" data-sheet-title></h3>
+        <button
+          type="button"
+          class="stencil transition-colors hover:text-chalk"
+          data-sheet-close
+        >
+          Cerrar
+        </button>
+      </div>
+
+      <ul class="-mx-1">
+        <li>
+          <button
+            type="button"
+            class="flex min-h-11 w-full items-center gap-3 rounded-field px-3 text-left transition-colors hover:bg-panel-hi"
+            data-pick
+            data-id=""
+            data-name="Descanso"
+            data-color=""
+            data-meta=""
+            aria-pressed="false"
+          >
+            <span
+              class="size-2.5 shrink-0 rounded-full border border-steel-hi"
+              aria-hidden="true"></span>
+            <span class="flex-1 font-display text-lg text-ash">Descanso</span>
+            <span class="stencil text-sodium" data-check hidden>✓</span>
+          </button>
+        </li>
+
+        {
+          routines.map((routine) => (
+            <li>
+              <button
+                type="button"
+                class="flex min-h-11 w-full items-center gap-3 rounded-field px-3 text-left transition-colors hover:bg-panel-hi"
+                data-pick
+                data-id={routine.id}
+                data-name={routine.name}
+                data-color={routine.color ?? '#E8A33D'}
+                data-meta={`${routine.exerciseCount} ej`}
+                aria-pressed="false"
+              >
+                <span
+                  class="size-2.5 shrink-0 rounded-full"
+                  style={`background:${routine.color ?? '#E8A33D'}`}
+                  aria-hidden="true"
+                />
+                <span class="min-w-0 flex-1 truncate font-display text-lg">{routine.name}</span>
+                <span class="stencil shrink-0 text-ash-dim">{routine.exerciseCount} ej</span>
+                <span class="stencil text-sodium" data-check hidden>
+                  ✓
+                </span>
+              </button>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </dialog>
 </section>
+
+{/* Síncrono y antes de pintar: si esperase al módulo diferido se verían los
+    siete `<select>` un instante antes de cambiar de cara. Sin `define:vars`
+    —en esta versión de Astro revienta, ver sso-callback.astro. */}
+<script is:inline>
+  for (const week of document.querySelectorAll('[data-week]')) {
+    week.setAttribute('data-enhanced', '')
+  }
+</script>

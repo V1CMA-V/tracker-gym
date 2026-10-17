@@ -327,6 +327,45 @@
     color: var(--color-sodium);
   }
 
+  /* --- Hoja de selección. El único `<dialog>` de la app: abajo y a ancho
+         completo en el móvil —el pulgar llega—, y panel centrado a partir
+         de `sm`. El padding lo pone el contenido, no el diálogo. --- */
+  .sheet {
+    width: 100%;
+    max-width: 100%;
+    margin: auto auto 0;
+    padding: 0;
+    background: var(--color-panel);
+    color: var(--color-chalk);
+    border: 1px solid var(--color-steel);
+    border-radius: var(--radius-slab) var(--radius-slab) 0 0;
+    box-shadow: var(--shadow-lift);
+  }
+
+  .sheet::backdrop {
+    background: rgb(0 0 0 / 0.6);
+    backdrop-filter: blur(2px);
+  }
+
+  .sheet[open] {
+    animation: sheet-in 0.24s var(--ease-slab);
+  }
+
+  @keyframes sheet-in {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+  }
+
+  @media (min-width: 40rem) {
+    .sheet {
+      max-width: 22rem;
+      margin: auto;
+      border-radius: var(--radius-slab);
+    }
+  }
+
   /* --- Filete de acento para estados vacíos. Antes eran rayas de cinta
          de peligro; ahora es una sola línea que se apaga. --- */
   .hazard {
@@ -336,6 +375,22 @@
       color-mix(in srgb, var(--color-sodium) 25%, transparent) 45%,
       transparent 80%
     );
+  }
+
+  /* --- Plan semanal: las dos caras del mismo marcado ---------------------
+     El `<form>` con siete `<select>` y su botón Guardar es lo que se sirve
+     y lo que funciona sin JavaScript. `data-enhanced` lo pone un script
+     inline —antes de pintar, para que no parpadee— y cambia la cara a los
+     botones por día, que guardan solos. Las dos caras viven en el HTML;
+     aquí solo se decide cuál se ve. --- */
+  [data-week]:not([data-enhanced]) [data-day-trigger],
+  [data-week]:not([data-enhanced]) [data-day-display] {
+    display: none;
+  }
+
+  [data-week][data-enhanced] [data-day-select],
+  [data-week][data-enhanced] [data-week-save] {
+    display: none;
   }
 }
 
